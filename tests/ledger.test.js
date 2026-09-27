@@ -181,7 +181,10 @@ test('preferences validate defaults and keep shop settings separate by endpoint'
   assert.equal(p.shopName,'My shop');assert.equal(p.theme,'dark');assert.equal(p.printNotes,false);assert.equal(p.printContact,false);
   assert.deepEqual(entryDefaults(p),{category:'Bhara',method:'Online',direction:'out'});
   assert.equal(normalizePreferences({defaultCategory:'bad',defaultMethod:'bad',theme:'bad'}).defaultMethod,'Cash');
-  assert.equal(normalizePreferences(null).shopName,'Shop Ledger');
+  assert.equal(normalizePreferences(null).shopName,'Royal Furnitures');
+  assert.equal(normalizePreferences(null).address,'46/2, Lakkhad Pitha road');
+  assert.equal(normalizePreferences(null).phone,'+917987979086');
+  assert.equal(makeTransaction(form,id).timezone,'Asia/Kolkata');
   assert.notEqual(preferenceKey('sheet-a'),preferenceKey('sheet-b'));
 });
 test('CSV preserves quoted multiline data, decimal amounts and neutralizes formulas',()=>{

@@ -1,12 +1,21 @@
 import { categories, methods } from './ledger.js';
 
-export const DEFAULT_PREFERENCES = { shopName:'Shop Ledger', address:'', phone:'', defaultCategory:'Sale', defaultMethod:'Cash', theme:'light', largeText:false, printNotes:true, printContact:true };
+export const SHOP_BRAND = {
+  name: 'Royal Furnitures',
+  tagline: 'Apne Gar ko do ROYAL touch sirf Royal Furnitures se',
+  address: '46/2, Lakkhad Pitha road',
+  phone: '+917987979086',
+  timezone: 'Asia/Kolkata',
+  instagram: 'https://www.instagram.com/royalfurniture45/',
+};
+export const DEFAULT_PREFERENCES = { shopName:SHOP_BRAND.name, address:SHOP_BRAND.address, phone:SHOP_BRAND.phone, defaultCategory:'Sale', defaultMethod:'Cash', theme:'light', largeText:false, printNotes:true, printContact:true };
 export function normalizePreferences(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
+  const migrateGenericDefaults = input.shopName === 'Shop Ledger' && !String(input.address || '').trim() && !String(input.phone || '').trim();
   return {
-    shopName: typeof input.shopName==='string' && input.shopName.trim() ? input.shopName.trim().slice(0,100) : 'Shop Ledger',
-    address: typeof input.address==='string' ? input.address.slice(0,300) : '',
-    phone: typeof input.phone==='string' ? input.phone.slice(0,50) : '',
+    shopName: typeof input.shopName==='string' && input.shopName.trim() && input.shopName.trim() !== 'Shop Ledger' ? input.shopName.trim().slice(0,100) : SHOP_BRAND.name,
+    address: typeof input.address==='string' ? (migrateGenericDefaults && !input.address.trim() ? SHOP_BRAND.address : input.address.slice(0,300)) : SHOP_BRAND.address,
+    phone: typeof input.phone==='string' ? (migrateGenericDefaults && !input.phone.trim() ? SHOP_BRAND.phone : input.phone.slice(0,50)) : SHOP_BRAND.phone,
     defaultCategory: categories.includes(input.defaultCategory) ? input.defaultCategory : 'Sale',
     defaultMethod: methods.includes(input.defaultMethod) ? input.defaultMethod : 'Cash',
     theme: input.theme==='dark' ? 'dark' : 'light',

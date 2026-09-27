@@ -1,6 +1,8 @@
 # Shop Ledger
 
-A mobile-first React shop ledger: payment in/out, Sale, Purchase, Bhara (transport/delivery), Expense, Cash/Online/Cheque, date-range filtering and A4 printing. No login, cheque-status tracking or invoices. INR is the initial currency; transaction dates default to the device's local date/time and timezone.
+A mobile-first React shop ledger: payment in/out, Sale, Purchase, Bhara (transport/delivery), Expense, Cash/Online/Cheque, date-range filtering and A4 printing. No login, cheque-status tracking or invoices. INR is the initial currency; new transaction dates and report periods use Asia/Kolkata.
+
+This build is branded for Royal Furnitures. Its logo, shop name, tagline, address and phone appear in the app and print reports. The address and phone are included in this public static site and its source repository. New transaction dates, report periods and timezone labels use Asia/Kolkata; amounts remain INR. Per-browser Shop & preferences can still override the report details.
 
 ## Run locally
 
@@ -87,13 +89,16 @@ Keyboard shortcuts (paused while Settings is open, a request is running, or a pa
 | Shortcut | Action |
 |---|---|
 | Alt + N | New entry; confirms before discarding an unsaved draft |
+| Alt + Enter | Focus Amount |
 | Alt + I / O | Payment in / out |
-| Alt + 1 / 2 / 3 / 4 | Sale / Purchase / Bhara / Expense |
+| Alt + S / P / B / E | Sale / Purchase / Bhara / Expense; the legacy Alt + 1 / 2 / 3 / 4 category keys still work |
+| Alt + C / L | Cash / Online; Alt + O remains Payment Out |
+| Alt + Q / V | Vendor / Notes |
 | Ctrl + Enter, or Command + Enter on Mac | Save the current entry using normal form validation |
 | Tab / Shift + Tab | Next / previous control |
 | Escape | Close Settings when no request is running |
 
-Single letters never trigger actions. OS/browser reserved shortcuts may take precedence. Direction and category shortcuts apply only in Entry. Navigation preserves the draft; leaving the page with an unsaved draft requests the browser's standard confirmation. Successful saves clear the amount, customer, notes, cheque date and custom date, keep category/method/direction, and focus Amount on desktop. Failed saves freeze the original entry for an idempotent retry. By default, date/time is taken at Save; use Change date for historical entries. Backdated payments appear under the appropriate period in History, not today's sidebar. No backend deployment update is required for the POS layout.
+Keys appear beside their fields and buttons, and in the keyboard shortcut guide. Each focused Entry control scrolls smoothly to the center of the screen. OS/browser reserved shortcuts may take precedence. Direction and category shortcuts apply only in Entry. Navigation preserves the draft; leaving the page with an unsaved draft requests the browser's standard confirmation. Successful saves clear the amount, customer, notes, cheque date and custom date, keep category/method/direction, and focus Amount on desktop. Failed saves freeze the original entry for an idempotent retry. By default, date/time is taken at Save; use Change date for historical entries. Backdated payments appear under the appropriate period in History, not today's sidebar. No backend deployment update is required for the POS layout.
 
 To enable editing, download the latest Code.gs from Settings, replace the Apps Script code, save, and deploy a New version of the existing deployment. Refresh the Sheet Report snapshot after editing to update its totals. updatedAt records the most recent edit; this version does not retain a full before/after audit history.
 
@@ -108,3 +113,8 @@ CSV export loads fresh active records for the selected inclusive date range (ini
 Deleted transactions are loaded on demand from Settings. Restore preserves the original row, ID, amount, dates and other details, removes the deletion marker and records restoredAt. Retrying restoration is safe. Delete/restore increment revision so older edits cannot overwrite a changed record. A payment deleted again after restoration must be reloaded before restoring again. Refresh the Sheet Report tab to rebuild its snapshot after a restore.
 
 Recovery requires Code.gs 1.3.0: download it from Settings → Google Sheets setup, replace your Apps Script code, save, and deploy a New version of the existing deployment. New columns are appended automatically and old transaction records are retained. The app remains unauthenticated; anyone with a shop's endpoint can also restore its records.
+# Installing Shop Ledger on a phone
+
+Shop Ledger is configured as a Progressive Web App. Deploy it to GitHub Pages over HTTPS, open the deployed site in Chrome on Android, then choose **Install app** from Chrome's menu or use the app's **Install app** button when it appears. On iPhone/iPad, open the site in Safari, tap **Share**, then **Add to Home Screen**.
+
+The service worker caches the app shell so the interface can reopen offline after it has loaded online. Recording and syncing transactions still requires an internet connection to reach the Google Apps Script and Sheet.
