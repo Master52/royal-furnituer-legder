@@ -1,10 +1,28 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BACKEND_SOURCE, BUNDLED_BACKEND_VERSION } from './backend.js';
 import PreferencesPanel from './PreferencesPanel.jsx';
 
-export default function Settings({ endpoint, info, synced, url, setUrl, connect, disconnect, busy, pending, preferences, savePreferences, range, exportCsv, deleted, loadDeleted, restore, feedback }) {
+function versionAtLeast(actual, required) {
+  if (typeof actual!=='string' || !/^\d+(\.\d+)*$/.test(actual)) return false;
+  const a=actual.split('.').map(Number),b=required.split('.').map(Number);
+  for(let i=0;i<Math.max(a.length,b.length);i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false;}
+  return true;
+}
+
+export default function Settings({ endpoint, info, synced, url, setUrl, connect, disconnect, busy, pending, preferences, savePreferences, range, exportCsv, deleted, loadDeleted, restore, feedback, openTweak }) {
   const [copyStatus, setCopyStatus] = useState('');
   const [tab,setTab] = useState(endpoint ? 'preferences' : 'connection');
+  useEffect(()=>{
+    if(tab!=='tweaks')return;
+    const handler=event=>{
+      if(!event.altKey||!event.shiftKey||event.ctrlKey||event.metaKey||event.repeat)return;
+      const key=event.key.toLowerCase();
+      const type=key==='x'?'transfer':key==='a'?'adjustment':'';
+      if(!type)return;
+      event.preventDefault();openTweak(type);
+    };
+    window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
+  },[tab,openTweak]);
   function download() {
     const objectUrl = URL.createObjectURL(new Blob([BACKEND_SOURCE], { type: 'text/plain;charset=utf-8' }));
     const link = document.createElement('a'); link.href = objectUrl; link.download = 'Code.gs';
@@ -16,8 +34,9 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
     catch { setCopyStatus('Copy is unavailable in this browser. Download Code.gs or select the code below.'); }
   }
   return <div className="connection-settings">
-    <div className="settings-tabs" role="group" aria-label="Settings sections"><button type="button" aria-pressed={tab==='preferences'} onClick={()=>setTab('preferences')}>Shop & preferences</button><button type="button" aria-pressed={tab==='connection'} onClick={()=>setTab('connection')}>Google Sheets setup</button></div>
+    <div className="settings-tabs" role="group" aria-label="Settings sections"><button type="button" aria-pressed={tab==='preferences'} onClick={()=>setTab('preferences')}>Shop & preferences</button><button type="button" aria-pressed={tab==='tweaks'} onClick={()=>setTab('tweaks')}>Tweaks</button><button type="button" aria-pressed={tab==='connection'} onClick={()=>setTab('connection')}>Google Sheets setup</button></div>
     {tab==='preferences' ? <PreferencesPanel key={endpoint} preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} busy={busy} pending={pending} endpoint={endpoint} feedback={feedback}/> : <>
+    {tab==='tweaks' ? <><p className="help">Optional tools for adjusting cash and online balances. They stay out of the regular payment entry screen.</p><section className="setup-step tweak-tools"><h3>Cash & online tools</h3><p>Use these when money is exchanged between payment methods or when the counted balance differs from the ledger.</p><button type="button" className="outline full" disabled={busy||!!pending||!endpoint} onClick={()=>openTweak('transfer')}>Record cash ↔ online exchange <kbd>Alt + Shift + X</kbd></button><button type="button" className="outline full" disabled={busy||!!pending||!endpoint} onClick={()=>openTweak('adjustment')}>Adjust cash or online balance <kbd>Alt + Shift + A</kbd></button>{!endpoint&&<p className="help">Connect Google Sheets before recording balance tools.</p>}</section></> : <>
     <p className="help">Use your own Google Sheet. Your connection is remembered on this browser; no shop link is included in the app.</p>
     <section className="connection-details"><h3>Current connection</h3>
       <dl><dt>Saved web app URL</dt><dd className="endpoint-value">{endpoint || 'No sheet connected yet'}</dd>
@@ -25,7 +44,7 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
         <dt>Deployed Code.gs version</dt><dd>{endpoint ? info?.version || 'Unknown — older scripts do not report a version' : 'Not connected'}</dd>
         {endpoint && info?.checkedAt && <><dt>Last successful check</dt><dd>{new Date(info.checkedAt).toLocaleString()}</dd></>}
         <dt>Code.gs included with this app</dt><dd>{BUNDLED_BACKEND_VERSION}</dd></dl>
-      {endpoint && info?.version !== BUNDLED_BACKEND_VERSION && <p className="help">{info?.version ? 'Your deployed script differs from the included version.' : 'Update your script to enable version reporting.'} Follow “Update an existing script” below.</p>}
+      {endpoint && !versionAtLeast(info?.version,BUNDLED_BACKEND_VERSION) && <p className="help">{info?.version ? 'Your deployed script is older than the included version.' : 'Update your script to enable version reporting.'} Follow “Update an existing script” below.</p>}
     </section>
     <section className="setup-step"><h3>1. Get the Google Sheets code</h3><p>Create your own Google Sheet, then open <strong>Extensions → Apps Script</strong>. Replace the sample code with the file below and save.</p>
       <div className="setup-actions"><button type="button" className="primary" onClick={download}>↓ Download Code.gs</button><button type="button" className="outline" onClick={copy}>Copy code</button></div>
@@ -47,6 +66,6 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
     <details className="setup-step"><summary>Connection troubleshooting</summary><p>If you see “Failed to fetch” or a CORS error, open your /exec URL in an incognito window. It should show JSON, not a Google sign-in page. Confirm access is Anyone and that you deployed the latest version. Some work accounts restrict public web apps.</p><p>For report-date errors, run resetReportDates in Apps Script. This resets the report period to this month.</p></details>
     <p className="help">Keep your Sheet private. This setup has no login: anyone who obtains the web app URL can read, add and delete its records. Browser storage keeps the URL out of the shared app code, but does not make it a password.</p>
     {endpoint && <button type="button" className="outline full disconnect" disabled={busy || !!pending} onClick={disconnect}>Disconnect this browser</button>}
-    </>}
+    </>}</>}
   </div>;
 }

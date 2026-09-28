@@ -13,6 +13,15 @@ export function validMinorAmount(value) {
 }
 export function transactionIntegrityIssue(t) {
   if (!t || typeof t!=='object') return 'invalid transaction row';
+  if(t.recordType==='adjustment'){
+    if(!validMinorAmount(t.amountMinor))return 'invalid cashflow adjustment amount';
+    if(!validLocalDateTime(`${t.transactionDate}T${t.transactionTime}`))return 'invalid transaction date or time';
+    if(t.category!=='Cashflow adjustment'||t.method!=='Adjustment'||!['adjustment','adjustment-cash','adjustment-online'].includes(t.direction))return 'invalid cashflow adjustment';
+    const fields=['expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor'];
+    if(fields.some(key=>!Number.isSafeInteger(integerValue(t[key]))||Math.abs(integerValue(t[key]))>100000000000))return 'invalid cashflow adjustment amount';
+    if((t.direction!=='adjustment-online'&&Number(t.countedCashMinor)<0)||(t.direction!=='adjustment-cash'&&Number(t.countedOnlineMinor)<0)||Number(t.cashAdjustmentMinor)!==Number(t.countedCashMinor)-Number(t.expectedCashMinor)||Number(t.onlineAdjustmentMinor)!==Number(t.countedOnlineMinor)-Number(t.expectedOnlineMinor)||Number(t.amountMinor)!==Math.abs(Number(t.cashAdjustmentMinor))+Math.abs(Number(t.onlineAdjustmentMinor))||Number(t.amountMinor)<=0)return 'unbalanced cashflow adjustment';
+    return '';
+  }
   if (!validMinorAmount(t.amountMinor)) return 'invalid amount';
   if (!validLocalDateTime(`${t.transactionDate}T${t.transactionTime}`)) return 'invalid transaction date or time';
   if (t.recordType === 'transfer') return t.direction === 'transfer' && t.category === 'Transfer' && ['Cash','Online'].includes(t.fromMethod) && ['Cash','Online'].includes(t.toMethod) && t.fromMethod !== t.toMethod ? '' : 'invalid cash/online exchange';
@@ -31,7 +40,7 @@ export function duplicateTransactionIds(rows) {
 }
 export function sumAmounts(rows) {
   const duplicates=duplicateTransactionIds(rows);
-  return rows.reduce((sum,t)=>sum+(!duplicates.has(t.id) && !transactionIntegrityIssue(t) && t.recordType!=='transfer'?Number(t.amountMinor):0),0);
+  return rows.reduce((sum,t)=>sum+(!duplicates.has(t.id) && !transactionIntegrityIssue(t) && (!t.recordType||t.recordType==='payment')?Number(t.amountMinor):0),0);
 }
 export function localNow() {
   const d = new Date();
@@ -57,7 +66,7 @@ export function filterTransactions(rows, { start, end, category = '', method = '
 export function totals(rows) {
   const duplicates=duplicateTransactionIds(rows);
   return rows.reduce((sum, t) => {
-    if (duplicates.has(t.id) || transactionIntegrityIssue(t) || t.recordType==='transfer') return sum;
+    if (duplicates.has(t.id) || transactionIntegrityIssue(t) || (t.recordType && t.recordType!=='payment')) return sum;
     return { ...sum, [t.direction]: sum[t.direction] + Number(t.amountMinor) };
   }, { in: 0, out: 0 });
 }
@@ -83,8 +92,24 @@ function validDateOnly(value) {
   return month>=1 && month<=12 && day>=1 && day<=days[month-1];
 }
 export function makeTransaction(form, id = crypto.randomUUID()) {
-  const amountMinor=parseMinor(form.amount,form.recordType==='transfer'?'exchange amount':'amount');
   if (!validLocalDateTime(form.dateTime)) throw new Error('Choose a valid transaction date and time.');
+  if(form.recordType==='adjustment'){
+    const parseBalance=(value,label)=>parseMinor(value,label,true);
+    const expectedCash=integerValue(form.expectedCashMinor),expectedOnline=integerValue(form.expectedOnlineMinor);
+    if(!Number.isSafeInteger(expectedCash)||!Number.isSafeInteger(expectedOnline))throw new Error('Refresh the ledger before saving a cashflow adjustment.');
+    const adjustmentMethod=form.adjustmentMethod==='Online'?'Online':'Cash';
+    const countedBalance=parseBalance(form.countedBalance,`${adjustmentMethod.toLowerCase()} balance`);
+    const preservedCash=integerValue(form.preservedCashAdjustmentMinor??0),preservedOnline=integerValue(form.preservedOnlineAdjustmentMinor??0);
+    if(!Number.isSafeInteger(preservedCash)||!Number.isSafeInteger(preservedOnline))throw new Error('Refresh the ledger before saving a cashflow adjustment.');
+    const cashAdjustment=adjustmentMethod==='Cash'?countedBalance-expectedCash:preservedCash;
+    const onlineAdjustment=adjustmentMethod==='Online'?countedBalance-expectedOnline:preservedOnline;
+    const countedCash=expectedCash+cashAdjustment,countedOnline=expectedOnline+onlineAdjustment;
+    const amountMinor=Math.abs(cashAdjustment)+Math.abs(onlineAdjustment);
+    if(amountMinor===0)throw new Error('Your counted balances already match. There is no adjustment to record.');
+    if(amountMinor>100000000000)throw new Error('Combined adjustment is too large.');
+    return {id,schemaVersion:1,recordType:'adjustment',transactionDate:form.dateTime.slice(0,10),transactionTime:form.dateTime.slice(11,16),timezone:SHOP_TIMEZONE,direction:adjustmentMethod==='Cash'?'adjustment-cash':'adjustment-online',category:'Cashflow adjustment',method:'Adjustment',amountMinor,currency:'INR',party:'',notes:(form.notes||'').trim(),createdAt:new Date().toISOString(),metadata:'{}',chequeDate:'',cashReceivedMinor:'',cashChangeMinor:'',onlineChangeMinor:'',fromMethod:'',toMethod:'',expectedCashMinor:expectedCash,countedCashMinor:countedCash,cashAdjustmentMinor:cashAdjustment,expectedOnlineMinor:expectedOnline,countedOnlineMinor:countedOnline,onlineAdjustmentMinor:onlineAdjustment};
+  }
+  const amountMinor=parseMinor(form.amount,form.recordType==='transfer'?'exchange amount':'amount');
   const base={id,schemaVersion:1,recordType:form.recordType==='transfer'?'transfer':'payment',transactionDate:form.dateTime.slice(0,10),transactionTime:form.dateTime.slice(11,16),timezone:SHOP_TIMEZONE,amountMinor,currency:'INR',party:(form.party || '').trim(),notes:(form.notes || '').trim(),createdAt:new Date().toISOString(),metadata:'{}'};
   if (base.recordType==='transfer') {
     const directions={'receive-cash-send-online':['Online','Cash'],'receive-online-give-cash':['Cash','Online']};
@@ -126,4 +151,14 @@ export function paymentMethodTotals(rows,{start,end,category='',query=''}={}) {
     }else if((!t.recordType || t.recordType==='payment') && categories.includes(t.category)) add(t.method,t.direction,amount);
   }
   return result;
+}
+
+export function paymentMethodBalance(rows) {
+  const dates=rows.map(t=>t.transactionDate).filter(value=>typeof value==='string').sort();
+  if(!dates.length)return {Cash:0,Online:0};
+  const methods=paymentMethodTotals(rows,{start:dates[0],end:dates[dates.length-1]});
+  const duplicates=duplicateTransactionIds(rows);
+  let cashAdjustment=0,onlineAdjustment=0;
+  for(const t of rows){if(duplicates.has(t.id)||transactionIntegrityIssue(t)||t.recordType!=='adjustment')continue;cashAdjustment+=Number(t.cashAdjustmentMinor);onlineAdjustment+=Number(t.onlineAdjustmentMinor);}
+  return {Cash:methods.Cash.in-methods.Cash.out+cashAdjustment,Online:methods.Online.in-methods.Online.out+onlineAdjustment};
 }
