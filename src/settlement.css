@@ -1,0 +1,25 @@
+.record-mode-picker{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:0 0 20px;padding:4px;background:#f0f4ef;border-radius:9px}
+.record-mode-picker button{min-height:44px;padding:9px;border-radius:6px;font-size:12px}
+.record-mode-picker button.active{background:#fff;color:#214c3f;box-shadow:0 1px 5px #203d2014;font-weight:700}
+.exchange-picker{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.exchange-picker button{display:flex;flex-direction:column;gap:6px;align-items:flex-start;justify-content:center;min-height:75px;padding:12px;border:1px solid #dee6dd;border-radius:8px;text-align:left}
+.exchange-picker button.selected{background:#edf5ee;border-color:#52795c;color:#214c3f}
+.exchange-picker strong{font-size:12px}
+.exchange-picker small{font-size:10px;color:#839084}
+.transfer-help{margin:13px 0;padding:12px;border-radius:7px;background:#f5f7f3;color:#708071;font-size:11px;line-height:1.5}
+.cash-change-fields{margin:0 0 20px;padding:14px;border:1px solid #e4e9e2;border-radius:9px;background:#fafbf8}
+.cash-change-fields>label{margin-bottom:0}
+.change-due{display:grid;grid-template-columns:1fr auto;align-items:center;gap:6px 12px;margin-top:13px;padding-top:12px;border-top:1px solid #e4e9e2}
+.change-due>span{font-size:12px;color:#68796c}
+.change-due>strong{font-size:17px;color:#214c3f}
+.change-due>label{grid-column:1/-1;margin:4px 0 0}
+.change-due>small{grid-column:1/-1;color:#85917e;font-size:10px;line-height:1.5}
+.cash-shortfall{grid-column:1/-1;margin:10px 0 0;color:#a43e31;font-size:11px;font-weight:600}
+[data-theme=dark] .record-mode-picker,[data-theme=dark] .transfer-help{background:#26372b;color:#c1d0bd}
+[data-theme=dark] .record-mode-picker button.active{background:#1c2a23;color:#e2eae3}
+[data-theme=dark] .exchange-picker button,[data-theme=dark] .cash-change-fields{background:#1c2a23;border-color:#3b5141;color:#e2eae3}
+[data-theme=dark] .exchange-picker button.selected{background:#293b2c;border-color:#668662}
+[data-theme=dark] .exchange-picker small,[data-theme=dark] .change-due>span,[data-theme=dark] .change-due>small{color:#b5c5af}
+[data-theme=dark] .change-due{border-color:#3b5141}
+[data-theme=dark] .cash-shortfall{color:#ff9f91}
+@media(max-width:420px){.record-mode-picker{grid-template-columns:1fr}.record-mode-picker button{min-height:40px}.exchange-picker{grid-template-columns:1fr}.exchange-picker button{min-height:59px}}

@@ -1,6 +1,6 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.3.0';
-const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt'];
+const BACKEND_VERSION = '1.4.0';
+const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod'];
 
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -58,13 +58,40 @@ function doGet() {
   catch (error) { return json_({ok:false,error:'Could not load records. Check the script setup and permissions.'}); }
 }
 function validDate_(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value; }
+function integerValue_(value) { if (typeof value === 'number') return Number.isSafeInteger(value) ? value : NaN; if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) { const parsed=Number(value); return Number.isSafeInteger(parsed) ? parsed : NaN; } return NaN; }
+function validMinor_(value) { const amount=integerValue_(value); return amount>0 && amount<=100000000000; }
 function validate_(t) {
   if (!t || typeof t.id !== 'string' || !/^[a-zA-Z0-9-]{20,80}$/.test(t.id)) throw new Error('Invalid transaction ID.');
   if (t.schemaVersion !== 1 || !Number.isSafeInteger(t.amountMinor) || t.amountMinor <= 0 || t.amountMinor > 100000000000 || t.currency !== 'INR') throw new Error('Invalid amount, currency or schema version.');
-  if (!['in','out'].includes(t.direction) || !['Sale','Purchase','Bhara','Expense'].includes(t.category) || !['Cash','Online','Cheque'].includes(t.method)) throw new Error('Invalid payment details.');
   if (!validDate_(t.transactionDate) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.transactionTime)) throw new Error('Invalid transaction date or time.');
-  if (t.method === 'Cheque' && !validDate_(t.chequeDate)) throw new Error('Cheque given date is required.');
   if (typeof t.party !== 'string' || t.party.length > 150 || typeof t.notes !== 'string' || t.notes.length > 1000 || typeof t.timezone !== 'string' || t.timezone.length > 100) throw new Error('Invalid name, notes or timezone.');
+  if (t.recordType === 'transfer') {
+    if (t.direction !== 'transfer' || t.category !== 'Transfer' || t.method !== 'Transfer' || !['Cash','Online'].includes(t.fromMethod) || !['Cash','Online'].includes(t.toMethod) || t.fromMethod === t.toMethod) throw new Error('Invalid cash/online transfer.');
+    t.chequeDate = ''; t.cashReceivedMinor = ''; t.cashChangeMinor = ''; t.onlineChangeMinor = '';
+    return;
+  }
+  if (t.recordType && t.recordType !== 'payment') throw new Error('Invalid transaction type.');
+  t.recordType = 'payment';
+  if (!['in','out'].includes(t.direction) || !['Sale','Purchase','Bhara','Expense'].includes(t.category) || !['Cash','Online','Cheque'].includes(t.method)) throw new Error('Invalid payment details.');
+  if (t.method === 'Cheque' && !validDate_(t.chequeDate)) throw new Error('Cheque given date is required.');
+  const cashSale = t.category === 'Sale' && t.direction === 'in' && t.method === 'Cash';
+  if (cashSale) {
+    const cashReceived = t.cashReceivedMinor === '' || t.cashReceivedMinor == null ? t.amountMinor : integerValue_(t.cashReceivedMinor);
+    const cashChange = t.cashChangeMinor === '' || t.cashChangeMinor == null ? 0 : integerValue_(t.cashChangeMinor);
+    const onlineChange = t.onlineChangeMinor === '' || t.onlineChangeMinor == null ? 0 : integerValue_(t.onlineChangeMinor);
+    if (![cashReceived,cashChange,onlineChange].every(value => Number.isSafeInteger(value) && value >= 0) || cashReceived > 100000000000 || cashChange > 100000000000 || onlineChange > 100000000000 || cashReceived !== t.amountMinor + cashChange + onlineChange) throw new Error('Cash received must equal the sale amount plus cash and online change returned.');
+    t.cashReceivedMinor = cashReceived; t.cashChangeMinor = cashChange; t.onlineChangeMinor = onlineChange;
+  } else {
+    t.cashReceivedMinor = ''; t.cashChangeMinor = ''; t.onlineChangeMinor = '';
+  }
+  t.fromMethod = ''; t.toMethod = '';
+}
+function comparable_(t,key) {
+  if (key === 'recordType') return t.recordType || 'payment';
+  const cashSale = t.category === 'Sale' && t.direction === 'in' && t.method === 'Cash';
+  if (cashSale && key === 'cashReceivedMinor' && (t[key] === '' || t[key] == null)) return Number(t.amountMinor);
+  if (cashSale && ['cashChangeMinor','onlineChangeMinor'].includes(key) && (t[key] === '' || t[key] == null)) return 0;
+  return t[key] ?? '';
 }
 function doPost(e) {
   const lock = LockService.getScriptLock();
@@ -99,10 +126,10 @@ function doPost(e) {
       const reject = message => { const error = new Error(message); error.code = 'EDIT_CONFLICT'; throw error; };
       if (!existing || existing.deletedAt) reject('This payment no longer exists or has been deleted. Reload the latest records.');
       if (typeof t._editId !== 'string' || !/^[a-zA-Z0-9-]{20,80}$/.test(t._editId) || !Number.isSafeInteger(t._expectedRevision) || t._expectedRevision < 0) throw new Error('Invalid edit request.');
-      const fields = ['transactionDate','transactionTime','direction','category','method','amountMinor','currency','party','notes','chequeDate'];
+      const fields = ['recordType','transactionDate','transactionTime','direction','category','method','amountMinor','currency','party','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod'];
       if (t.method !== 'Cheque') t.chequeDate = '';
       if (existing.lastEditId === t._editId) {
-        if (fields.some(key => String(existing[key] ?? '') !== String(t[key] ?? ''))) reject('This edit ID was already used for different changes.');
+        if (fields.some(key => String(comparable_(existing,key)) !== String(comparable_(t,key)))) reject('This edit ID was already used for different changes.');
         return json_({ok:true,id:t.id,updated:true,transaction:existing});
       }
       if (Number(existing.revision || 0) !== t._expectedRevision) reject('This payment changed on another device. Reload it before editing again.');
@@ -136,8 +163,8 @@ function doPost(e) {
     }
     if (existing) {
       if (existing.deletedAt) throw new Error('This transaction has been deleted. It cannot be recreated with the same ID.');
-      const fields = ['amountMinor','transactionDate','transactionTime','direction','category','method','party','notes','chequeDate'];
-      if (fields.some(key => String(existing[key] || '') !== String(t[key] || ''))) throw new Error('This ID already belongs to a different payment.');
+      const fields = ['recordType','amountMinor','transactionDate','transactionTime','direction','category','method','party','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod'];
+      if (fields.some(key => String(comparable_(existing,key) || '') !== String(comparable_(t,key) || ''))) throw new Error('This ID already belongs to a different payment.');
       return json_({ok:true,id:t.id,duplicate:true});
     }
     t.createdAt = new Date().toISOString(); t.metadata = '{}'; t.deletedAt = ''; t.updatedAt = ''; t.revision = 0; t.lastEditId = ''; t.restoredAt = ''; t.lastRestoreDeletedAt = '';
@@ -161,7 +188,24 @@ function refreshReport() {
   if (!validDate_(start)) throw new Error('Report!B2 must contain a date or YYYY-MM-DD text. Run resetReportDates to use this month.');
   if (!validDate_(end)) throw new Error('Report!B3 must contain a date or YYYY-MM-DD text. Run resetReportDates to use this month.');
   if (start > end) throw new Error('Report!B2 (start date) must be on or before Report!B3 (end date). Run resetReportDates to use this month.');
-  const rows = records_(sheet,headers).filter(t => !t.deletedAt && t.transactionDate >= start && t.transactionDate <= end);
+  const activeRows = records_(sheet,headers).filter(t => !t.deletedAt);
+  const seenIds = new Set();
+  for (const t of activeRows) {
+    if (seenIds.has(t.id)) throw new Error('Cannot refresh report: transaction ID '+t.id+' appears more than once. Remove or repair the duplicate row.');
+    seenIds.add(t.id);
+    if (!validMinor_(t.amountMinor)) throw new Error('Cannot refresh report: transaction '+t.id+' has an invalid amount in Transactions. Correct that row and retry.');
+    if (!validDate_(t.transactionDate) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.transactionTime)) throw new Error('Cannot refresh report: transaction '+t.id+' has an invalid date or time. Correct that row and retry.');
+    if (t.recordType === 'transfer') {
+      if (t.direction !== 'transfer' || t.category !== 'Transfer' || !['Cash','Online'].includes(t.fromMethod) || !['Cash','Online'].includes(t.toMethod) || t.fromMethod === t.toMethod) throw new Error('Cannot refresh report: cash/online exchange '+t.id+' has invalid balance fields. Correct that row and retry.');
+    } else {
+      if ((t.recordType && t.recordType !== 'payment') || !['in','out'].includes(t.direction) || !['Sale','Purchase','Bhara','Expense'].includes(t.category) || !['Cash','Online','Cheque'].includes(t.method) || (t.method==='Cheque' && !validDate_(t.chequeDate))) throw new Error('Cannot refresh report: transaction '+t.id+' has invalid type, method, direction or cheque date. Correct that row and retry.');
+      if (t.category === 'Sale' && t.direction === 'in' && t.method === 'Cash' && t.cashReceivedMinor !== '' && t.cashReceivedMinor != null) {
+        const received=integerValue_(t.cashReceivedMinor),cashChange=integerValue_(t.cashChangeMinor || 0),onlineChange=integerValue_(t.onlineChangeMinor || 0);
+        if (![received,cashChange,onlineChange].every(Number.isSafeInteger) || [received,cashChange,onlineChange].some(value=>value<0 || value>100000000000) || received!==Number(t.amountMinor)+cashChange+onlineChange) throw new Error('Cannot refresh report: cash change details for transaction '+t.id+' do not balance. Correct that row and retry.');
+      }
+    }
+  }
+  const rows = activeRows.filter(t => t.transactionDate >= start && t.transactionDate <= end);
   const output = [['Category','Payment in (INR)','Payment out (INR)','Net movement (INR)','Count']];
   ['Sale','Purchase','Bhara','Expense'].forEach(category => {
     const selected = rows.filter(t=>t.category===category);

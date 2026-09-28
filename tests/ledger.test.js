@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { periodRange, makeTransaction, totals, filterTransactions } from '../src/ledger.js';
+import { periodRange, makeTransaction, totals, sumAmounts, filterTransactions, paymentMethodTotals, transactionIntegrityIssue, duplicateTransactionIds, money } from '../src/ledger.js';
 import { validateEndpoint, request } from '../src/api.js';
 import { newEntry, editEntry, hasDraft, shortcutAction } from '../src/entry.js';
 import { normalizePreferences, entryDefaults, preferenceKey, csvForTransactions } from '../src/preferences.js';
@@ -22,6 +22,13 @@ test('shortcuts require modifiers and ignore held keys, text composition and Alt
   assert.equal(shortcutAction({key:'o',altKey:true}),'out');
   assert.equal(shortcutAction({key:'Enter',ctrlKey:true}),'save');
   assert.equal(shortcutAction({key:'Enter',metaKey:true}),'save');
+  assert.equal(shortcutAction({key:'r',altKey:true}),'cash-received');
+  assert.equal(shortcutAction({key:'h',altKey:true}),'cash-change');
+  assert.equal(shortcutAction({key:'j',altKey:true}),'online-change');
+  assert.equal(shortcutAction({key:'x',altKey:true}),'exchange-mode');
+  assert.equal(shortcutAction({key:'1',altKey:true,shiftKey:true}),'exchange-cash-online');
+  assert.equal(shortcutAction({key:'2',altKey:true,shiftKey:true}),'exchange-online-cash');
+  assert.equal(shortcutAction({key:'1',altKey:true}),'Sale');
   assert.equal(shortcutAction({key:'Enter'}),null);
   for(const extra of [{repeat:true},{isComposing:true},{getModifierState:()=>true},{ctrlKey:true}]) assert.equal(shortcutAction({key:'n',altKey:true,...extra}),null);
 });
@@ -35,6 +42,56 @@ test('integer money, cheque requirements, old transaction dates',()=>{
   for (const amount of ['-1','0','1.005','NaN','Infinity']) assert.throws(()=>makeTransaction({...form,amount},id));
   assert.throws(()=>makeTransaction({...form,method:'Cheque'},id));
   assert.equal(makeTransaction({...form,method:'Cheque',chequeDate:'2026-09-11'},id).chequeDate,'2026-09-11');
+  assert.throws(()=>makeTransaction({...form,dateTime:'2026-02-30T14:20'},id),/valid transaction date/);
+  assert.throws(()=>makeTransaction({...form,dateTime:'2026-09-12T24:00'},id),/valid transaction date/);
+  assert.equal(transactionIntegrityIssue({...makeTransaction(form,id),transactionDate:'2026-02-30'}),'invalid transaction date or time');
+  assert.equal(makeTransaction({...form,amount:'1000000000'},id).amountMinor,100000000000);
+  assert.throws(()=>makeTransaction({...form,amount:'1000000000.01'},id),/no greater than/);
+});
+test('cash sales calculate change and account for online and cash returns',()=>{
+  const cashDefault=makeTransaction({...form,amount:'1000',cashReceived:'1200'},id);
+  assert.equal(cashDefault.cashChangeMinor,20000);assert.equal(cashDefault.onlineChangeMinor,0);
+  const sale=makeTransaction({...form,amount:'1000',cashReceived:'1200',onlineChange:'150'},id);
+  assert.equal(sale.amountMinor,100000);assert.equal(sale.cashReceivedMinor,120000);assert.equal(sale.onlineChangeMinor,15000);assert.equal(sale.cashChangeMinor,5000);
+  const onlineSelected=makeTransaction({...form,amount:'1000',cashReceived:'1200',cashChange:'75'},id);
+  assert.equal(onlineSelected.cashChangeMinor,7500);assert.equal(onlineSelected.onlineChangeMinor,12500);
+  assert.throws(()=>makeTransaction({...form,amount:'1000',cashReceived:'1200',cashChange:'50',onlineChange:'100'},id),/add up to the change due/);
+  assert.throws(()=>makeTransaction({...form,amount:'1000',cashReceived:'900'},id),/less than the sale amount/);
+  assert.throws(()=>makeTransaction({...form,amount:'1000',cashReceived:'1100',onlineChange:'120'},id),/add up to the change due/);
+  const methods=paymentMethodTotals([sale],{start:'2026-09-01',end:'2026-09-30'});
+  assert.deepEqual(methods,{Cash:{in:120000,out:5000},Online:{in:0,out:15000}});
+  assert.equal(totals([sale]).in,100000);
+  const paise=makeTransaction({...form,amount:'12.30',cashReceived:'12.34',cashChange:'0.01'},id);
+  assert.equal(paise.cashReceivedMinor,1234);assert.equal(paise.cashChangeMinor,1);assert.equal(paise.onlineChangeMinor,3);
+});
+test('cash/online exchanges move balances both ways without becoming income or expense',()=>{
+  const receivedCash=makeTransaction({...form,recordType:'transfer',amount:'250',exchangeDirection:'receive-cash-send-online'},id);
+  const receivedOnline=makeTransaction({...form,recordType:'transfer',amount:'250',exchangeDirection:'receive-online-give-cash'},'22345678-1234-1234-1234-123456789012');
+  assert.deepEqual([receivedCash.fromMethod,receivedCash.toMethod],['Online','Cash']);
+  assert.deepEqual([receivedOnline.fromMethod,receivedOnline.toMethod],['Cash','Online']);
+  assert.deepEqual(totals([receivedCash,receivedOnline]),{in:0,out:0});
+  const methods=paymentMethodTotals([receivedCash],{start:'2026-09-01',end:'2026-09-30'});
+  assert.deepEqual(methods,{Cash:{in:25000,out:0},Online:{in:0,out:25000}});
+  const reverse=paymentMethodTotals([receivedOnline],{start:'2026-09-01',end:'2026-09-30'});
+  assert.deepEqual(reverse,{Cash:{in:0,out:25000},Online:{in:25000,out:0}});
+});
+test('bad sheet values cannot poison totals or cash/online settlement figures',()=>{
+  const good=makeTransaction(form,id);
+  const badAmount={...good,id:'bad-amount',amountMinor:'0x10'};
+  const badDirection={...good,id:'bad-direction',direction:'sideways'};
+  const badType={...good,id:'bad-type',recordType:'unexpected'};
+  assert.deepEqual(totals([good,badAmount,badDirection,badType]),{in:125055,out:0});
+  assert.equal(sumAmounts([good,badAmount]),125055);
+  assert.equal(money('not a number'),'Invalid amount');
+  assert.equal(money('1e3'),'Invalid amount');
+  const badSettlement={...makeTransaction({...form,amount:'100',cashReceived:'120'},'22345678-1234-1234-1234-123456789012'),onlineChangeMinor:'broken'};
+  assert.deepEqual(totals([badSettlement]),{in:0,out:0});assert.equal(sumAmounts([badSettlement]),0);
+  const methods=paymentMethodTotals([badSettlement],{start:'2026-09-01',end:'2026-09-30'});
+  assert.deepEqual(methods,{Cash:{in:0,out:0},Online:{in:0,out:0}});
+  assert.equal(transactionIntegrityIssue(badSettlement),'unbalanced cash change');
+  const duplicate={...good,id:'duplicate-id'};
+  assert.deepEqual([...duplicateTransactionIds([duplicate,{...duplicate}])],['duplicate-id']);
+  assert.deepEqual(totals([duplicate,{...duplicate}]),{in:0,out:0});
 });
 test('inclusive date filters and direction independent from category',()=>{
   const a=makeTransaction(form,id), b={...a,id:'b',direction:'out',amountMinor:55,transactionDate:'2026-09-30'};
@@ -116,6 +173,13 @@ test('reports exclude deleted records from totals',()=>{
   context.records_=()=>[active,{...active,id:'deleted',amountMinor:999999,deletedAt:'2026-09-26T00:00:00Z'}];
   context.refreshReport();assert.equal(output.at(-1)[1],1250.55);assert.equal(output.at(-1)[4],1);
 });
+test('Sheet report stops instead of publishing totals when a transaction amount is corrupt',()=>{
+  const {context}=backend();
+  context.spreadsheet_=()=>({getSpreadsheetTimeZone:()=> 'UTC',getSheetByName:()=>({getRange:cell=>({getValue:()=>cell==='B2'?'2026-09-01':'2026-09-30'})})});
+  context.ensureSheet_=()=>({sheet:{},headers:[]});
+  context.records_=()=>[{id:'corrupt-row',transactionDate:'2026-09-12',amountMinor:'bad',category:'Sale',direction:'in'}];
+  assert.throws(()=>context.refreshReport(),/has an invalid amount/);
+});
 test('direct backend access lists records and still excludes deleted rows',()=>{
   const {context,post}=backend();
   assert.equal(context.doGet().ok,true);
@@ -137,10 +201,26 @@ test('client reads and writes without Firebase credentials',async()=>{
 });
 test('backend reports its deployed version without modifying existing transactions',()=>{
   const {context,post,data}=backend();
-  assert.equal(context.doGet().backendVersion,'1.3.0');
-  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.3.0');
+  assert.equal(context.doGet().backendVersion,'1.4.0');
+  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.4.0');
   assert.equal(data[1][data[0].indexOf('schemaVersion')],1);
-  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.3.0');
+  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.4.0');
+});
+test('Apps Script appends settlement columns and validates change/exchange records',()=>{
+  const {context,post,data}=backend();
+  const sale=makeTransaction({...form,amount:'100',cashReceived:'120',onlineChange:'20'},id);
+  assert.equal(post(sale).ok,true);
+  const headers=data[0];
+  for(const name of ['recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod']) assert.ok(headers.includes(name));
+  const saved=context.doGet().transactions[0];
+  assert.equal(saved.cashReceivedMinor,12000);assert.equal(saved.onlineChangeMinor,2000);assert.equal(saved.cashChangeMinor,0);
+  assert.equal(post({...sale,cashChangeMinor:-1}).ok,false);
+  assert.equal(post({...sale,onlineChangeMinor:'2e3'}).ok,false);
+  const transfer=makeTransaction({...form,recordType:'transfer',amount:'35',exchangeDirection:'receive-cash-send-online'},'32345678-1234-1234-1234-123456789012');
+  assert.equal(post(transfer).ok,true);
+  assert.equal(context.doGet().transactions[1].recordType,'transfer');
+  assert.equal(post({...transfer,fromMethod:'Cash'}).ok,false);
+  assert.equal(data.length,3);
 });
 test('connection rejects successful responses without a ledger but supports older unversioned scripts',async()=>{
   const originalFetch=globalThis.fetch;
@@ -159,12 +239,12 @@ test('editing preserves ID, creation time, unknown columns and handles duplicate
   const {context,post,data}=backend();const t=makeTransaction(form,id);post(t);
   const created=context.doGet().transactions[0].createdAt;
   data[0].push('future');data[1].push('preserve');
-  const change={...t,amountMinor:9900,notes:'=literal note',_expectedRevision:0,_editId:'33333333-1234-1234-1234-123456789012'};
+  const change={...t,amountMinor:9900,cashReceivedMinor:9900,cashChangeMinor:0,onlineChangeMinor:0,notes:'=literal note',_expectedRevision:0,_editId:'33333333-1234-1234-1234-123456789012'};
   const edit=t=>context.doPost({postData:{contents:JSON.stringify({action:'update',transaction:t})}});
   const result=edit(change);assert.equal(result.updated,true);assert.equal(result.transaction.id,id);assert.equal(result.transaction.createdAt,created);assert.equal(result.transaction.revision,1);assert.ok(result.transaction.updatedAt);
   assert.equal(context.doGet().transactions[0].future,'preserve');assert.equal(context.doGet().transactions[0].notes,'=literal note');
   assert.equal(edit(change).transaction.revision,1);assert.equal(data.length,2);
-  assert.equal(edit({...change,amountMinor:20}).code,'EDIT_CONFLICT');
+  assert.equal(edit({...change,amountMinor:20,cashReceivedMinor:20}).code,'EDIT_CONFLICT');
   assert.equal(edit({...change,_editId:'44444444-1234-1234-1234-123456789012'}).code,'EDIT_CONFLICT');
   assert.equal(edit({...change,_expectedRevision:1,_editId:'44444444-1234-1234-1234-123456789012'}).transaction.revision,2);
 });
@@ -193,6 +273,7 @@ test('CSV preserves quoted multiline data, decimal amounts and neutralizes formu
   assert.ok(csv.startsWith('\uFEFF"id"'));assert.ok(csv.includes('"1250.55"'));
   assert.ok(csv.includes('"\'=SUM(A1)"'));assert.ok(csv.includes('"\'  +danger"'));assert.ok(csv.includes('"\'\t=evil"'));
   assert.ok(csv.includes('"He said ""hello"",\nsecond line"'));
+  assert.ok(csvForTransactions([{id:'bad',amountMinor:'1e4'}]).includes('"INVALID"'));
   assert.equal(csvForTransactions([]).split('\r\n').length,1);
 });
 test('deleted list and restore preserve records and handle retries without duplication',()=>{

@@ -51,6 +51,11 @@ The `Transactions` tab is the source of truth. Never rename existing headers or 
 | chequeDate | Date cheque was given; mandatory for cheques |
 | createdAt | Server-recorded UTC creation timestamp |
 | metadata | Reserved JSON object for future optional fields |
+| recordType | `payment` for existing business transactions; `transfer` for cash/online balance exchanges |
+| cashReceivedMinor, cashChangeMinor, onlineChangeMinor | Sale cash tender and any cash or online change returned, stored as integer paise |
+| fromMethod, toMethod | For `transfer` rows, the balance account money leaves and enters; currently Cash or Online |
+
+New settlement and transfer fields were added at the end of the sheet schema. Existing rows keep their values and are interpreted as ordinary payments. A cash Sale can record the amount physically received, calculate the total change due, and split returned change between cash and online. Change defaults to cash; adjusting either return amount updates the other to the remaining change. A separate Cash ↔ Online exchange records balance adjustments that are not revenue or expense. These features require Apps Script backend 1.4.0; replace Code.gs and deploy a New version before saving them. The app blocks these advanced records against older deployments while ordinary payments continue to work.
 
 Future invoices, customers, or edit history should use separate tabs linked by stable IDs. Avoid changing existing rows to accommodate new features. Each transaction has a Delete button with confirmation. Deletion sets a server-generated `deletedAt` timestamp; the row remains recoverable in Sheets but is excluded from app reads and regenerated reports. Blank `deletedAt` values on older rows mean active. Delete retries are idempotent, and a deleted ID cannot be recreated. History includes Edit: it loads the original values into the payment form and preserves the date/time. Save changes updates the same row and keeps the ID, creation timestamp, metadata and unknown columns. Edits add updatedAt, revision and lastEditId columns; older records use revision zero. Conflicting edits from another device are rejected and must be reloaded. Network retries are idempotent. It validates writes, locks concurrent writes, neutralizes spreadsheet formula inputs and checks duplicate IDs. Both frontend and backend validation must be extended when introducing categories or methods.
 
@@ -74,7 +79,7 @@ Pending saves from the former signed-in version (`rf.pending.<user ID>`) are ret
 
 ## Browser settings and script versions
 
-Settings is available in the top bar on desktop and mobile. First visits open setup automatically. Download, copy, and view actions all use a raw import of the one canonical Code.gs, so release downloads cannot drift from the repository backend. Backend version 1.3.0 reports `backendVersion` in every JSON response; this release number is separate from transaction `schemaVersion` and does not rewrite historical records.
+Settings is available in the top bar on desktop and mobile. First visits open setup automatically. Download, copy, and view actions all use a raw import of the one canonical Code.gs, so release downloads cannot drift from the repository backend. Backend version 1.4.0 reports `backendVersion` in every JSON response; this release number is separate from transaction `schemaVersion` and does not rewrite historical records.
 
 The deployed version is reported by the server; it is never guessed from the downloaded version. Saving edited Apps Script code alone does not update the deployed version. Use Manage deployments → Edit → New version → Deploy, then test the connection again.
 
@@ -94,6 +99,10 @@ Keyboard shortcuts (paused while Settings is open, a request is running, or a pa
 | Alt + S / P / B / E | Sale / Purchase / Bhara / Expense; the legacy Alt + 1 / 2 / 3 / 4 category keys still work |
 | Alt + C / L | Cash / Online; Alt + O remains Payment Out |
 | Alt + Q / V | Vendor / Notes |
+| Alt + M / X | Switch to payment mode / Cash ↔ Online exchange mode |
+| Alt + R | Focus Cash received (Sale paid by Cash) |
+| Alt + H / J | Focus Return in cash / Return online |
+| Alt + Shift + 1 / 2 | Select the two Cash ↔ Online exchange directions |
 | Ctrl + Enter, or Command + Enter on Mac | Save the current entry using normal form validation |
 | Tab / Shift + Tab | Next / previous control |
 | Escape | Close Settings when no request is running |
@@ -112,7 +121,7 @@ CSV export loads fresh active records for the selected inclusive date range (ini
 
 Deleted transactions are loaded on demand from Settings. Restore preserves the original row, ID, amount, dates and other details, removes the deletion marker and records restoredAt. Retrying restoration is safe. Delete/restore increment revision so older edits cannot overwrite a changed record. A payment deleted again after restoration must be reloaded before restoring again. Refresh the Sheet Report tab to rebuild its snapshot after a restore.
 
-Recovery requires Code.gs 1.3.0: download it from Settings → Google Sheets setup, replace your Apps Script code, save, and deploy a New version of the existing deployment. New columns are appended automatically and old transaction records are retained. The app remains unauthenticated; anyone with a shop's endpoint can also restore its records.
+Recovery, editing, cash change, and balance exchanges require Code.gs 1.4.0: download it from Settings → Google Sheets setup, replace your Apps Script code, save, and deploy a New version of the existing deployment. New columns are appended automatically and old transaction records are retained. The app remains unauthenticated; anyone with a shop's endpoint can also restore its records.
 # Installing Shop Ledger on a phone
 
 Shop Ledger is configured as a Progressive Web App. Deploy it to GitHub Pages over HTTPS, open the deployed site in Chrome on Android, then choose **Install app** from Chrome's menu or use the app's **Install app** button when it appears. On iPhone/iPad, open the site in Safari, tap **Share**, then **Add to Home Screen**.

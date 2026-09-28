@@ -1,4 +1,4 @@
-import { categories, methods } from './ledger.js';
+import { categories, methods, validMinorAmount } from './ledger.js';
 
 export const SHOP_BRAND = {
   name: 'Royal Furnitures',
@@ -29,14 +29,14 @@ export function entryDefaults(preferences) {
   return { category:preferences.defaultCategory, method:preferences.defaultMethod, direction:preferences.defaultCategory==='Sale'?'in':'out' };
 }
 export function csvForTransactions(rows) {
-  const columns = ['id','transactionDate','transactionTime','timezone','direction','category','method','amount','currency','party','notes','chequeDate','createdAt','updatedAt'];
+  const columns = ['id','recordType','transactionDate','transactionTime','timezone','direction','category','method','amount','currency','party','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','createdAt','updatedAt'];
   const cell = value => {
     let text = String(value ?? '');
     // CSV quoting alone does not stop spreadsheet formula execution.
     if (/^[\t\r\n]|^\s*[=+\-@]/.test(text)) text = "'" + text;
     return '"' + text.replaceAll('"','""') + '"';
   };
-  return '\uFEFF' + [columns, ...rows.map(t=>columns.map(key=>key==='amount'?(Number(t.amountMinor)/100).toFixed(2):t[key]))].map(row=>row.map(cell).join(',')).join('\r\n');
+  return '\uFEFF' + [columns, ...rows.map(t=>columns.map(key=>key==='amount'?(validMinorAmount(t.amountMinor)?(Number(t.amountMinor)/100).toFixed(2):'INVALID'):t[key]))].map(row=>row.map(cell).join(',')).join('\r\n');
 }
 export function downloadText(text, filename, type = 'text/plain;charset=utf-8') {
   const url = URL.createObjectURL(new Blob([text],{type}));
