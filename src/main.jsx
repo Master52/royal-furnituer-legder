@@ -76,7 +76,7 @@ function App() {
   const refreshInFlight=useRef(false);
   const outboxProcessing=useRef(false);
   function persistOutbox(queue) {
-    try { write(outboxKey,queue); localStorage.removeItem(pendingKey); setOutbox(queue); return true; }
+    try { write(outboxKey,queue); setOutbox(queue); try { localStorage.removeItem(pendingKey); } catch { /* The durable outbox write already succeeded. */ } return true; }
     catch { setError('Could not save the upload queue on this device. Check browser storage and try again.'); return false; }
   }
   const dialog = useRef(null);
