@@ -129,3 +129,67 @@ Recovery, editing, cash change, and balance exchanges require Code.gs 1.4.0. Cas
 Shop Ledger is configured as a Progressive Web App. Deploy it to GitHub Pages over HTTPS, open the deployed site in Chrome on Android, then choose **Install app** from Chrome's menu or use the app's **Install app** button when it appears. On iPhone/iPad, open the site in Safari, tap **Share**, then **Add to Home Screen**.
 
 The service worker caches the app shell so the interface can reopen offline after it has loaded online. Recording and syncing transactions still requires an internet connection to reach the Google Apps Script and Sheet.
+
+## Party accounts and invoices (test branch, backend 1.7.0)
+
+Develop and test this feature on `feature/party-invoices` with a copied Google Sheet and a local app. Pushing a feature branch does not run the existing `main`-only Pages deployment. Merge into `main` only after testing the copied Sheet.
+
+In the test Sheet, replace Apps Script with this branch's `google-apps-script/Code.gs`, run `setup`, and deploy a new version of the **test** deployment. `setup` stores the active Sheet ID; check `SPREADSHEET_ID` matches the test Sheet. Connect the local app to that test `/exec` URL. Older backends continue to support ordinary payments; party-linked payments and invoices require 1.7.0. The app downloads the canonical script through Settings.
+
+### Accounting rules
+
+A party balance is opening balance + issued sales invoices − issued purchase invoices − payments received + payments made. Positive means the party owes the shop; negative means the shop owes the party (including advances). One party can be both customer and supplier; this first version shows its net balance. Payments select a stable party ID and are not allocated to invoices. Individual invoices have no paid/unpaid status. Cheques affect balances immediately, consistently with the existing payment ledger.
+
+Opening balance is the amount immediately before entries on its effective date. Linked payments and invoices cannot predate that date. Party name, phone and address can be edited with revision checks; opening date and balance are immutable in this release. Old name-only payments remain unlinked. Linking an old payment explicitly through Edit changes the party balance, so do not include that same payment in the opening amount. Parties are not deleted through the UI.
+
+Invoices are issued independently of payment transactions and never affect cash/online balances. Invoice numbers are entered manually: sales numbers are unique across the shop, purchase references per supplier; cancelled numbers remain reserved. Draft invoices live only in this browser, per endpoint. Issued documents are immutable; cancel with a reason and issue a replacement to correct them. Cancellation preserves the invoice and items but removes its effect on current balances and invoice reports; related party payments remain. Reports reflect current cancellation status, not a historical as-of audit of when cancellation occurred.
+
+Amounts are integer paise; quantities support three decimal places using integer thousandths. Each line total is quantity × unit rate, rounded to paise, minus its whole-line discount. Sales invoices optionally snapshot internal unit costs. Gross profit is invoice total minus rounded item costs; all costs must be supplied for an invoice to contribute to profit. Missing costs are counted and disclosed instead of treated as zero. This is gross profit, not net profit: operating expenses are separate. This release does not calculate GST/taxes, inventory cost allocation, returns or credit notes, or produce statutory tax invoices.
+
+Dashboard invoice figures use invoice dates and the selected date period, independent of payment category/method/search filters. Payment cards retain their original meanings and are labelled as payment categories. Never add invoice sales and Sale-category receipts together. Party balances use all confirmed records and show a separate receivable/payable total based on each party's net position. Refresh invoice figures to retrieve changes made on other devices; failed reads retain the previous snapshot with a warning.
+
+### Additive Sheet schema and recovery
+
+Existing `Transactions` records, schema version 1, IDs, headers and unknown columns are preserved. `partyId` is appended as an optional column. Blank means no party account; names are never matched automatically. Old clients cannot edit linked payments without explicitly understanding `partyId`.
+
+New tabs are created by `setup` (or on first account request):
+
+- `Parties`: permanent ID, schema version, name, phone, address, signed opening balance in paise, opening date, creation/update timestamps, revision, last edit ID and reserved archive timestamp.
+- `Invoices`: permanent ID, schema version, party ID, party contact snapshot, sales/purchase type, invoice number/date, notes, INR totals, optional internal cost total, item count, issued/cancelled status and cancellation details.
+- `InvoiceItems`: deterministic ID, parent invoice ID, description, integer quantity thousandths, rate, line discount, line total, optional unit cost and line cost, all amounts in paise.
+
+Sheet access uses headers rather than fixed column positions. Writes run under the script lock. Invoice totals are recalculated on the backend. Items are staged before committing the invoice header. Account reads acquire the same lock and only expose items through a complete invoice header. An interrupted write can leave orphan staged items; retrying the same invoice ID completes it without duplicating lines. Do not manually delete staging rows during recovery. Account reads reject incomplete/corrupt invoices instead of publishing partial balances.
+
+Party/invoice requests are stored durably in `rf.accounts.pending` with their original endpoint and payload before sending. A timeout leaves a retryable request across reloads, and changing connection is blocked until resolved. Backend rejections can be discarded to correct a draft; ambiguous network failures require retry. Unlike ordinary payments, these writes are confirmed online and not added to optimistic totals. Browser storage must not be cleared with an unconfirmed request. Invoice drafts are stored separately as `rf.invoiceDraft.<endpoint>`.
+
+The existing Google Sheet `Report` remains a payment report. Party statements are generated by the app: compact ledger or detailed ledger including invoice lines, with an opening balance carried forward and a closing balance. Both refresh confirmed records before printing and are blocked while payments are queued. Internal costs and profit are never rendered in statement output. Cancelled invoices are retained in the invoice register but excluded from statements.
+
+### Test acceptance checklist
+
+1. Confirm first launch opens setup and that closing/reopening Settings works.
+2. Connect only the copied test Sheet and verify the original Sheet remains unchanged.
+3. Add a party with zero opening balance dated before the first test invoice.
+4. Issue a ₹20,000 sales invoice with ₹14,000 total cost. Expect ₹20,000 receivable and ₹6,000 gross profit; cash stays unchanged.
+5. Receive ₹5,000 using that party. Expect ₹15,000 receivable and ₹5,000 more cash; invoice sales and profit stay unchanged.
+6. Record a ₹30,000 purchase invoice for a supplier and pay ₹10,000. Expect ₹20,000 payable.
+7. Check an advance payment, a nonzero opening balance, fractional quantities, discounts and an invoice with missing costs.
+8. Print compact and detailed party statements; verify opening/closing balances, invoice items only in detailed format, and no internal costs.
+9. Cancel an invoice and verify payments remain, the balance changes, and the cancelled document remains in Sheets.
+10. Interrupt an invoice upload, reload, and retry. Verify only one invoice and its original items exist.
+11. Recheck old transaction totals, cash change, exchanges, adjustments, editing and deletion/restoration before merging.
+
+Automated tests exercise calculations, schema preservation, validation, duplicate retries, interruption recovery, snapshots and cancellation using an in-memory Apps Script Sheet harness. Live Google authorization, deployment and cross-origin requests must also be tested against the copied Sheet.
+
+
+### Faster party loading (backend 1.7.1)
+
+Party/invoice snapshots are cached per Sheet endpoint in IndexedDB. Returning visits show the saved snapshot while one shared request refreshes it; the page displays its last-updated time. Switching between account views reuses recently confirmed data for up to one minute. Payment uploads refresh accounts once the queue drains, and party/invoice changes and print actions require a post-operation fresh read. Cache contents are never accepted as a fresh print confirmation.
+
+The app no longer fetches all account records whenever the local payment array changes. Concurrent background account reads share one request. Backend 1.7.1 reads each account tab as one range, avoids formatting or schema writes during reads, and indexes invoice items/party references once. The read lock is retained to avoid exposing incomplete invoices. Deploy this code as a new version of the test backend for the server-side improvements; browser caching and request deduplication also work with backend 1.7.0.
+
+
+### Invoice-first navigation
+
+The app now opens on Invoices. Navigation is Invoices, Parties, History, Dashboard and Settings; there is no standalone New Transaction screen. Invoices initially shows the register and a Create Invoice button. Closing the invoice form preserves its browser draft. Issuing an invoice opens its details with Print Invoice and a separate Receive Payment (sale) or Make Payment (purchase) action.
+
+Payments use a popup with the existing category, method, date, cheque and cash-change fields. Party and invoice actions preselect the party, but do not attach the payment to an invoice or prefill an assumed invoice balance. History → Record Payment also supports standalone expenses and Bhara. History edits, cash/online exchanges, and balance adjustments open the same popup. Closing a payment with an unsaved draft asks before discarding it. Saving closes the popup only after the existing durable outbox accepts the payment, with upload status and retry actions on the underlying page. Alt+N opens a payment popup; other payment shortcuts operate while that popup is open. Existing Sheet records and accounting rules are unchanged.

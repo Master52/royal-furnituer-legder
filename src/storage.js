@@ -79,3 +79,16 @@ export async function saveTransactionCache(endpoint, transactions, savedAt = new
   if (!endpoint || !Array.isArray(transactions)) return;
   await indexedDbRequest('readwrite', store => store.put({ transactions, savedAt }, TRANSACTION_CACHE_PREFIX + endpoint));
 }
+
+const ACCOUNT_CACHE_PREFIX = 'rf.accounts:';
+export async function loadAccountCache(endpoint) {
+  if (!endpoint) return null;
+  try {
+    const value = await indexedDbRequest('readonly', store => store.get(ACCOUNT_CACHE_PREFIX + endpoint));
+    return value && Array.isArray(value.data?.parties) && Array.isArray(value.data?.invoices) && Array.isArray(value.data?.transactions) ? value : null;
+  } catch { return null; }
+}
+export async function saveAccountCache(endpoint, data, savedAt) {
+  if (!endpoint) return;
+  await indexedDbRequest('readwrite', store => store.put({ data, savedAt }, ACCOUNT_CACHE_PREFIX + endpoint));
+}

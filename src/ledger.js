@@ -128,7 +128,7 @@ export function makeTransaction(form, id = crypto.randomUUID()) {
     onlineChangeMinor=form.onlineChange ? parseMinor(form.onlineChange,'online change returned',true) : form.cashChange ? changeDue-parseMinor(form.cashChange,'cash change returned',true) : 0;
     if (cashChangeMinor<0 || onlineChangeMinor<0 || cashChangeMinor+onlineChangeMinor!==changeDue) throw new Error('Cash and online change returned must add up to the change due.');
   }
-  return {...base,recordType:'payment',direction:form.direction,category:form.category,method:form.method,chequeDate:form.method==='Cheque'?form.chequeDate:'',cashReceivedMinor,cashChangeMinor,onlineChangeMinor,fromMethod:'',toMethod:''};
+  return {...base,partyId:form.partyId || '',recordType:'payment',direction:form.direction,category:form.category,method:form.method,chequeDate:form.method==='Cheque'?form.chequeDate:'',cashReceivedMinor,cashChangeMinor,onlineChangeMinor,fromMethod:'',toMethod:''};
 }
 
 export function paymentMethodTotals(rows,{start,end,category='',query=''}={}) {

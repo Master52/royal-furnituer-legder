@@ -187,7 +187,7 @@ test('setup fills missing report date cells even when the report already contain
   const report={getRange:cell=>({setValues(){return this;},getValue:()=>cells[cell],setNumberFormat(){return this;},setValue(value){cells[cell]=value;return this;}})};
   context.SpreadsheetApp.getActiveSpreadsheet=()=>({getId:()=> 'id',getSheetByName:()=>report});
   context.PropertiesService.getScriptProperties=()=>({setProperty(){}});
-  context.ensureSheet_=()=>{};context.currentReportMonth_=()=>['2024-02-01','2024-02-29'];
+  context.ensureSheet_=()=>{};context.ensureAccounts_=()=>{};context.currentReportMonth_=()=>['2024-02-01','2024-02-29'];
   context.refreshReport=()=>{};
   context.setup();assert.deepEqual(cells,{B2:'2024-02-10',B3:'2024-02-29'});
   context.setup();assert.deepEqual(cells,{B2:'2024-02-10',B3:'2024-02-29'});
@@ -242,10 +242,10 @@ test('client reads and writes without Firebase credentials',async()=>{
 });
 test('backend reports its deployed version without modifying existing transactions',()=>{
   const {context,post,data}=backend();
-  assert.equal(context.doGet().backendVersion,'1.6.0');
-  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.6.0');
+  assert.equal(context.doGet().backendVersion,'1.7.1');
+  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.7.1');
   assert.equal(data[1][data[0].indexOf('schemaVersion')],1);
-  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.6.0');
+  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.7.1');
 });
 test('Apps Script appends settlement columns and validates change, exchange and adjustment records',()=>{
   const {context,post,data}=backend();
