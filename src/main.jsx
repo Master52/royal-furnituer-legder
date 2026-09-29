@@ -232,7 +232,15 @@ function App() {
     })();
   },[outbox,endpoint,connectionRestored,busy,refreshing]);
   useEffect(()=>{ document.documentElement.dataset.theme=preferences.theme; document.documentElement.dataset.textSize=preferences.largeText?'large':'normal'; document.documentElement.dataset.printNotes=String(preferences.printNotes); document.title=preferences.shopName+' | Shop Ledger'; const description=document.querySelector('meta[name="description"]'); if(description) description.content='Royal Furnitures — Apne Gar ko do ROYAL touch sirf Royal Furnitures se. Shop ledger for payments, purchases, transport and expenses.'; },[preferences]);
-  useEffect(() => { if (modal) dialog.current?.showModal(); else dialog.current?.close(); }, [modal]);
+  useEffect(() => {
+    // The startup screen does not mount the dialog until restoration finishes.
+    if (!connectionRestored || !dialog.current) return;
+    if (modal) {
+      if (!dialog.current.open) dialog.current.showModal();
+    } else {
+      dialog.current.close();
+    }
+  }, [modal, connectionRestored]);
   function focusAmount() { setTimeout(() => { if (window.matchMedia('(min-width: 761px)').matches) focusAndCenter(amountRef.current); }, 0); }
   function openEntry() { setView('entry'); setError(''); focusAmount(); }
   function startNew() {
