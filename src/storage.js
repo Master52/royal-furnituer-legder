@@ -1,6 +1,7 @@
 const DB_NAME = 'shop-ledger-browser-settings';
 const STORE_NAME = 'settings';
 const ENDPOINT_KEY = 'rf.endpoint';
+const TRANSACTION_CACHE_PREFIX = 'rf.transactions:';
 
 export function readEndpoint() {
   try {
@@ -62,4 +63,19 @@ export async function clearEndpoint() {
   try { await indexedDbRequest('readwrite', store => store.delete(ENDPOINT_KEY)); } catch {
     if (readEndpoint()) throw new Error('Could not remove the saved connection. Check browser storage permissions.');
   }
+}
+
+export async function loadTransactionCache(endpoint) {
+  if (!endpoint) return null;
+  try {
+    const value = await indexedDbRequest('readonly', store => store.get(TRANSACTION_CACHE_PREFIX + endpoint));
+    return value && Array.isArray(value.transactions) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveTransactionCache(endpoint, transactions, savedAt = new Date().toISOString()) {
+  if (!endpoint || !Array.isArray(transactions)) return;
+  await indexedDbRequest('readwrite', store => store.put({ transactions, savedAt }, TRANSACTION_CACHE_PREFIX + endpoint));
 }
