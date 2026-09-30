@@ -6,7 +6,8 @@ function integerValue(value) {
   if (typeof value==='string' && /^-?\d+$/.test(value.trim())) { const parsed=Number(value);return Number.isSafeInteger(parsed)?parsed:NaN; }
   return NaN;
 }
-export const money = value => Number.isSafeInteger(integerValue(value)) ? new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(integerValue(value) / 100) : 'Invalid amount';
+const currencyFormatter=new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 });
+export const money = value => {const amount=integerValue(value);return Number.isSafeInteger(amount)?currencyFormatter.format(amount/100):'Invalid amount';};
 export function validMinorAmount(value) {
   const amount=integerValue(value);
   return amount>0 && amount<=100000000000;

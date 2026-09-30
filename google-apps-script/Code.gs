@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.7.1';
+const BACKEND_VERSION = '1.8.1';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId'];
 
 function setup() {
@@ -286,10 +286,10 @@ function validatePaymentParty_(t) {
   if (!party || party.archivedAt) throw new Error('Party not found or archived. Refresh the party list.');
   if (t.transactionDate<party.openingDate) throw new Error('Party payments cannot predate the opening balance date.');
 }
-function normalizedInvoice_(t) {
+function normalizedInvoice_(t, allowBlankNumber=false) {
   accountId_(t.id); accountId_(t.partyId);
   if (t.schemaVersion!==1 || t.currency!=='INR' || !['sale','purchase'].includes(t.type) || !validDate_(t.invoiceDate)) throw new Error('Invalid invoice details.');
-  const invoice={id:t.id,schemaVersion:1,partyId:t.partyId,type:t.type,invoiceNumber:accountText_(t.invoiceNumber,80,true),invoiceDate:t.invoiceDate,notes:accountText_(t.notes,1000),currency:'INR'};
+  const invoice={id:t.id,schemaVersion:1,partyId:t.partyId,type:t.type,invoiceNumber:allowBlankNumber && !t.invoiceNumber?'':accountText_(t.invoiceNumber,80,true),invoiceDate:t.invoiceDate,notes:accountText_(t.notes,1000),currency:'INR'};
   if (!Array.isArray(t.items) || !t.items.length || t.items.length>50) throw new Error('An invoice needs 1–50 items.');
   let total=0,cost=0,complete=true;
   const items=t.items.map((item,index)=>{
@@ -343,6 +343,7 @@ function accountAction_(action,t) {
   }
   if (!t || typeof t!=='object') throw new Error('Missing record.');
   accountId_(t.id);
+  let record=null;
   if (action==='createParty' || action==='updateParty') {
     const name=accountText_(t.name,150,true),phone=accountText_(t.phone,50),address=accountText_(t.address,500);
     const existing=accountRows_(ss,'Parties').find(row=>row.id===t.id);
@@ -352,20 +353,22 @@ function accountAction_(action,t) {
       const fields=['name','phone','address'];
       if (existing.lastEditId===t._editId) {
         if (!accountSame_(existing,t,fields)) throw new Error('Edit ID already used.');
-        return {ok:true,id:t.id};
+        return {ok:true,id:t.id,record:existing};
       }
       if (!Number.isSafeInteger(t._expectedRevision) || Number(existing.revision||0)!==t._expectedRevision) throw new Error('Party changed on another device. Refresh before editing.');
-      accountWrite_(ss,'Parties',{...existing,name,phone,address,updatedAt:new Date().toISOString(),revision:Number(existing.revision||0)+1,lastEditId:t._editId},true);
+      record={...existing,name,phone,address,updatedAt:new Date().toISOString(),revision:Number(existing.revision||0)+1,lastEditId:t._editId};
+      accountWrite_(ss,'Parties',record,true);
     } else {
       if (t.schemaVersion!==1 || !validDate_(t.openingDate)) throw new Error('Invalid party opening date or schema.');
       accountAmount_(t.openingBalanceMinor,true);
       const party={id:t.id,schemaVersion:1,name,phone,address,openingDate:t.openingDate,openingBalanceMinor:t.openingBalanceMinor};
       if (existing) {
         if (!accountSame_(existing,party,Object.keys(party))) throw new Error('This ID already belongs to a different party.');
-      } else accountWrite_(ss,'Parties',{...party,createdAt:new Date().toISOString(),updatedAt:'',revision:0,lastEditId:'',archivedAt:''});
+        record=existing;
+      } else {record={...party,createdAt:new Date().toISOString(),updatedAt:'',revision:0,lastEditId:'',archivedAt:''};accountWrite_(ss,'Parties',record);}
     }
   } else if (action==='createInvoice') {
-    const normalized=normalizedInvoice_(t),{items,...invoice}=normalized;
+    const normalized=normalizedInvoice_(t,true),{items,...invoice}=normalized;
     const parties=accountRows_(ss,'Parties'),party=parties.find(p=>p.id===t.partyId);
     if (!party || party.archivedAt) throw new Error('Party not found or archived.');
     if (t.invoiceDate<party.openingDate) throw new Error('Invoice date cannot predate the party opening balance date.');
@@ -373,21 +376,35 @@ function accountAction_(action,t) {
     const oldItems=accountRows_(ss,'InvoiceItems').filter(row=>row.invoiceId===t.id);
     if (oldItems.some(old=>!items.some(item=>item.id===old.id&&accountSame_(old,item,ACCOUNT_HEADERS.InvoiceItems)))) throw new Error('This invoice ID was already used for different items. Retry the original request.');
     if (existing) {
-      if (!accountSame_(existing,invoice,Object.keys(invoice)) || oldItems.length!==items.length) throw new Error('This ID already belongs to a different invoice.');
-      return {ok:true,id:t.id};
+      if (!accountSame_(existing,invoice,Object.keys(invoice).filter(key=>key!=='invoiceNumber'||invoice.invoiceNumber)) || oldItems.length!==items.length) throw new Error('This ID already belongs to a different invoice.');
+      return {ok:true,id:t.id,record:{...existing,...normalized,invoiceNumber:existing.invoiceNumber}};
     }
-    if (invoices.some(row=>row.type===t.type && (t.type==='sale'||row.partyId===t.partyId) && String(row.invoiceNumber).toLowerCase()===invoice.invoiceNumber.toLowerCase())) throw new Error('Invoice number already exists. Use a new number, including after cancellation.');
+    if (!invoice.invoiceNumber) {
+      const prefix=t.type==='sale'?'RF-S-':'RF-P-';
+      let last=0;
+      invoices.forEach(row=>{
+        const number=String(row.invoiceNumber||'').toUpperCase();
+        if (!number.startsWith(prefix)) return;
+        const match=/^RF-[SP]-(\d+)$/.exec(number);
+        if (match) last=Math.max(last,Number(match[1]));
+      });
+      if (!Number.isSafeInteger(last) || last>=999999999999) throw new Error('Invoice number limit reached.');
+      invoice.invoiceNumber=prefix+String(last+1).padStart(6,'0');
+    }
+    if (invoices.some(row=>String(row.invoiceNumber).toLowerCase()===invoice.invoiceNumber.toLowerCase())) throw new Error('Invoice number already exists. Refresh and retry.');
     // Items are staged first. Only a complete parent row makes them visible to readers.
     // Deterministic item IDs allow recovery if the request fails between these writes.
     items.forEach(item=>{if(!oldItems.some(old=>old.id===item.id))accountWrite_(ss,'InvoiceItems',item);});
     SpreadsheetApp.flush();
-    accountWrite_(ss,'Invoices',{...invoice,partyName:party.name,partyPhone:party.phone,partyAddress:party.address,status:'issued',createdAt:new Date().toISOString(),cancelledAt:'',cancelReason:''});
+    record={...invoice,items,partyName:party.name,partyPhone:party.phone,partyAddress:party.address,status:'issued',createdAt:new Date().toISOString(),cancelledAt:'',cancelReason:''};
+    accountWrite_(ss,'Invoices',record);
   } else if (action==='cancelInvoice') {
     const invoice=accountRows_(ss,'Invoices').find(row=>row.id===t.id);
     if (!invoice) throw new Error('Invoice not found.');
     const reason=accountText_(t.reason,500,true);
-    if (invoice.status!=='cancelled') accountWrite_(ss,'Invoices',{...invoice,status:'cancelled',cancelledAt:new Date().toISOString(),cancelReason:reason},true);
+    record=invoice.status==='cancelled'?invoice:{...invoice,status:'cancelled',cancelledAt:new Date().toISOString(),cancelReason:reason};
+    if (invoice.status!=='cancelled') accountWrite_(ss,'Invoices',record,true);
   }
   SpreadsheetApp.flush();
-  return {ok:true,id:t.id};
+  return {ok:true,id:t.id,record};
 }

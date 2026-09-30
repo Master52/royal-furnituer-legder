@@ -1,6 +1,6 @@
 import { localNow, transactionIntegrityIssue, duplicateTransactionIds } from './ledger.js';
 
-export const ACCOUNTS_VERSION = '1.7.0';
+export const ACCOUNTS_VERSION = '1.8.0';
 export const MAX_MINOR = 100000000000;
 export function minor(value, label = 'amount') {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value).trim());
@@ -21,7 +21,7 @@ export function makeParty(form, id = crypto.randomUUID()) {
 }
 export function makeInvoice(form, id = crypto.randomUUID()) {
   if (!form.partyId || !['sale', 'purchase'].includes(form.type)) throw new Error('Choose a party and invoice type.');
-  if (!form.invoiceNumber.trim() || form.invoiceNumber.trim().length > 80) throw new Error('Enter an invoice number (up to 80 characters).');
+  if (form.invoiceNumber && form.invoiceNumber.trim().length > 80) throw new Error('Invoice number is too long.');
   if (!validDate(form.invoiceDate)) throw new Error('Choose a valid invoice date.');
   if (!form.items.length || form.items.length > 50) throw new Error('Add between 1 and 50 invoice items.');
   let totalMinor = 0, costTotalMinor = 0, completeCost = true;
@@ -42,8 +42,33 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
     return { id: `${id}-${index + 1}`, invoiceId: id, description, quantityMilli, rateMinor, discountMinor, lineTotalMinor, costMinor, lineCostMinor };
   });
   if (totalMinor <= 0 || totalMinor > MAX_MINOR || costTotalMinor > MAX_MINOR) throw new Error('Invoice total must be positive and within the supported amount limit.');
-  return { id, schemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: form.invoiceNumber.trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
+  return { id, schemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: '', invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
 }
+
+export function findParties(parties, query, limit = 8) {
+  const clean = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const term = clean(query);
+  if (!term) return [...parties].sort((a,b)=>a.name.localeCompare(b.name)).slice(0,limit);
+  const tokens = term.split(' ');
+  return parties.map(party=>{
+    const name=clean(party.name),phone=clean(party.phone);
+    const words=name.split(' ');
+    let score=0;
+    if(name===term)score=1000;
+    else if(name.startsWith(term))score=800;
+    else if(words.some(word=>word.startsWith(term)))score=650;
+    else if(tokens.every(token=>words.some(word=>word.startsWith(token))))score=500;
+    else if(name.includes(term))score=350;
+    else if(phone.includes(term))score=300;
+    else {
+      let index=0;
+      for(const char of name)if(char===term[index])index++;
+      if(index===term.length)score=100;
+    }
+    return {party,score};
+  }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||a.party.name.localeCompare(b.party.name)).slice(0,limit).map(row=>row.party);
+}
+
 export function partyStatement(party, invoices, transactions, start = '0000-01-01', end = '9999-12-31') {
   const events = [];
   if (Number(party.openingBalanceMinor)) events.push({ id: `opening-${party.id}`, date: party.openingDate, sort: '0', description: 'Opening balance', delta: Number(party.openingBalanceMinor) });
@@ -80,4 +105,21 @@ export function invoiceSummary(invoices, start, end) {
     }
   }
   return result;
+}
+
+// Index balances once rather than scanning every invoice/payment for every party.
+export function accountBalances(parties,invoices,transactions){
+  const rows=new Map(parties.map(party=>[party.id,{party,balance:Number(party.openingBalanceMinor)||0,error:''}]));
+  const duplicates=duplicateTransactionIds(transactions);
+  for(const invoice of invoices){const row=rows.get(invoice.partyId);if(row&&invoice.status==='issued')row.balance+=Number(invoice.totalMinor)*(invoice.type==='sale'?1:-1);}
+  for(const payment of transactions){
+    const row=rows.get(payment.partyId);
+    if(!row||payment.deletedAt||payment.recordType&&payment.recordType!=='payment')continue;
+    if(duplicates.has(payment.id)||transactionIntegrityIssue(payment)){row.error='A linked payment is invalid or duplicated.';continue;}
+    row.balance+=Number(payment.amountMinor)*(payment.direction==='in'?-1:1);
+  }
+  return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
+}
+export function invoiceDraftFromRecord(saved){
+  return {...blankInvoice(),partyId:saved.partyId,type:saved.type,invoiceDate:saved.invoiceDate,notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2)}))};
 }

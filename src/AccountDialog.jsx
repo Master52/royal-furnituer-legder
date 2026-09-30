@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
-export default function AccountDialog({ title, onClose, busy = false, className = '', children }) {
+export default function AccountDialog({ title, onClose, busy = false, className = '', initialFocus = null, children }) {
   const dialog = useRef(null);
   const titleId = useId();
   useEffect(() => {
@@ -9,11 +9,12 @@ export default function AccountDialog({ title, onClose, busy = false, className 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     element.showModal();
+    if(initialFocus)element.querySelector(initialFocus)?.focus();
     return () => {
       element.close();
       document.body.style.overflow = previousOverflow;
     };
-  }, []);
+  }, [initialFocus]);
   return createPortal(
     <dialog ref={dialog} className={`account-dialog ${className}`} aria-labelledby={titleId}
       onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>

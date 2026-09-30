@@ -1,4 +1,4 @@
-const CACHE = 'shop-ledger-shell-v4';
+const CACHE = 'shop-ledger-shell-v5';
 const BASE = new URL('./', self.registration.scope);
 const SHELL = [BASE.href, new URL('manifest.webmanifest', BASE).href, new URL('icons/royal-logo.png', BASE).href, new URL('icons/ledger-192-v2.png', BASE).href, new URL('icons/ledger-512-v2.png', BASE).href];
 
@@ -23,6 +23,14 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // Always request the current code first. Mixing cached and new modules can prevent startup.
+  if (request.destination === 'script' || request.destination === 'style' || url.pathname.includes('/src/') || url.pathname.includes('/node_modules/')) {
+    event.respondWith(fetch(request).then(response => {
+      if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
+      return response;
+    }).catch(() => caches.match(request)));
+    return;
+  }
   event.respondWith(caches.match(request).then(cached => cached || fetch(request).then(response => {
     if (response.ok) caches.open(CACHE).then(cache => cache.put(request, response.clone()));
     return response;
