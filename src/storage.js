@@ -29,7 +29,9 @@ async function indexedDbRequest(mode, action) {
     return await new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, mode);
       const request = action(transaction.objectStore(STORE_NAME));
-      request.onsuccess = () => resolve(request.result);
+      // A successful request can still be rolled back by a later abort.
+      // Report a write as saved only when its transaction commits.
+      transaction.oncomplete = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('Browser storage unavailable'));
       transaction.onabort = () => reject(transaction.error || new Error('Browser storage unavailable'));
     });

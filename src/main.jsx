@@ -1,9 +1,10 @@
 import AccountDialog from './AccountDialog.jsx';
-import AccountsPanel, { InvoiceDashboard } from './AccountsPanel.jsx';
+import AccountsPanel from './AccountsPanel.jsx';
 import useAccounts from './useAccounts.js';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { categories, methods, money, localNow, periodRange, filterTransactions, totals, sumAmounts, makeTransaction, paymentMethodTotals, paymentMethodBalance, transactionIntegrityIssue, duplicateTransactionIds, SHOP_TIMEZONE } from './ledger.js';
+import { flushSync } from 'react-dom';
+import { categories, methods, money, localNow, periodRange, filterTransactions, makeTransaction, paymentMethodBalance, transactionIntegrityIssue, duplicateTransactionIds } from './ledger.js';
 import { request, validateEndpoint } from './api.js';
 import Settings from './Settings.jsx';
 import { backendInfo } from './backend.js';
@@ -16,7 +17,13 @@ import './settlement.css';
 import './outbox.css';
 import './accounts.css';
 import PaymentEntry from './PaymentEntry.jsx';
-import { newEntry, editEntry, hasDraft, shortcutAction, focusAndCenter } from './entry.js';
+import TransactionDetails from './TransactionDetails.jsx';
+import SyncStatus from './SyncStatus.jsx';
+import {invoiceNoteRevision} from './accounts.js';
+import {planBulkDelete} from './bulkDelete.js';
+import ActivityTable from './ActivityTable.jsx';
+import DashboardOverview from './DashboardOverview.jsx';
+import { newEntry, partyPaymentEntry, editEntry, hasDraft, shortcutAction, focusAndCenter } from './entry.js';
 import { readEndpoint, loadEndpoint, saveEndpoint, clearEndpoint, loadTransactionCache, saveTransactionCache } from './storage.js';
 import { applyQueuedOperation, overlayOutbox, queueRecord } from './outbox.js';
 
@@ -31,8 +38,6 @@ function initialOutbox(){
   return queue.map(item=>item._status==='uploading'?{...item,_status:item._endpoint?'queued':'failed',_error:item._endpoint?null:'This saved payment has no recorded Sheet destination. Confirm the connected Sheet before retrying.',_errorCode:item._endpoint?null:'MISSING_ENDPOINT'}:!item._endpoint&&item._status!=='failed'?{...item,_status:'failed',_error:'This saved payment has no recorded Sheet destination. Confirm the connected Sheet before retrying.',_errorCode:'MISSING_ENDPOINT'}:item);
 }
 
-const symbols = { Sale: '↗', Purchase: '↙', Bhara: '⇄', Expense: '−', 'Cashflow adjustment':'±' };
-const dashboardCategoryOrder=['Sale','Purchase','Expense','Bhara'];
 function versionAtLeast(actual, required) {
   if (typeof actual!=='string' || !/^\d+(\.\d+)*$/.test(actual)) return false;
   const a=actual.split('.').map(Number),r=required.split('.').map(Number);
@@ -59,14 +64,15 @@ function App() {
   const pending=outbox[0]||null;
   const accountsEnabled=versionAtLeast(connectionInfo?.version,'1.8.0');
   const accounts=useAccounts(endpoint,accountsEnabled);
+  useEffect(()=>{if(accounts.loaded&&!accounts.cached&&accounts.backendVersion&&accounts.backendVersion!==connectionInfo?.version)rememberInfo(endpoint,{backendVersion:accounts.backendVersion});},[accounts.loaded,accounts.cached,accounts.backendVersion,connectionInfo?.version,endpoint]);
   const [period, setPeriod] = useState('month');
   const [range, setRange] = useState(() => periodRange('month'));
-  const [category, setCategory] = useState('');
   const [historyCategory, setHistoryCategory] = useState('');
   const [invoiceCreateRequest, setInvoiceCreateRequest] = useState(0);
   const [invoiceResumeRequest, setInvoiceResumeRequest] = useState(0);
   const [hasInvoiceDraft, setHasInvoiceDraft] = useState(false);
   const [invoiceOpenRequest, setInvoiceOpenRequest] = useState(null);
+  const [noteOpenRequest,setNoteOpenRequest]=useState(null);
   const [method, setMethod] = useState('');
   const [query, setQuery] = useState('');
   const [modal, setModal] = useState(() => endpoint ? '' : 'settings');
@@ -80,8 +86,13 @@ function App() {
   const [synced, setSynced] = useState(false);
   const [view, setView] = useState('dashboard');
   const [paymentOpen,setPaymentOpen] = useState(false);
-  useEffect(()=>{if(['accounts','dashboard'].includes(view))accounts.refreshIfStale();},[view,accounts.refreshIfStale]);
+  useEffect(()=>{if(['accounts','dashboard','history'].includes(view))accounts.refreshIfStale();},[view,accounts.refreshIfStale]);
+  const [printingTransactions,setPrintingTransactions]=useState(false);
+  useEffect(()=>{const before=()=>{if(!document.body.dataset.accountPrint)flushSync(()=>setPrintingTransactions(true));};const after=()=>setPrintingTransactions(false);window.addEventListener('beforeprint',before);window.addEventListener('afterprint',after);return()=>{window.removeEventListener('beforeprint',before);window.removeEventListener('afterprint',after);};},[]);
   const [editing, setEditing] = useState(null);
+  const [transactionSelection,setTransactionSelection]=useState(null);
+  const transactionDetail=transactionSelection?.endpoint===endpoint?(rows.find(row=>row===transactionSelection.record)||rows.find(row=>row.id===transactionSelection.id)):null;
+  useEffect(()=>{if(transactionSelection&&!transactionDetail)setTransactionSelection(null);},[transactionSelection,transactionDetail]);
   const [editConflict, setEditConflict] = useState(false);
   const amountRef = useRef(null);
   const formRef = useRef(null);
@@ -95,18 +106,11 @@ function App() {
   const dialog = useRef(null);
   const duplicateIds=useMemo(()=>duplicateTransactionIds(rows),[rows]);
   const calculationRows=useMemo(()=>rows.filter(t=>!duplicateIds.has(t.id)),[rows,duplicateIds]);
-  const activeCategory = view === 'history' ? historyCategory : category;
-  const visible = filterTransactions(rows, { start: range[0], end: range[1], category: activeCategory, method, query });
-  const summary = totals(visible.filter(t=>!duplicateIds.has(t.id)));
-  const categoryRows = filterTransactions(calculationRows, { start: range[0], end: range[1], method, query }).filter(t=>!transactionIntegrityIssue(t));
-  const paymentMethodSummary = paymentMethodTotals(calculationRows, { start: range[0], end: range[1], category, query });
   const allTimePaymentMethodSummary = useMemo(()=>paymentMethodBalance(calculationRows),[calculationRows]);
   const expectedCash=allTimePaymentMethodSummary.Cash;
   const expectedOnline=allTimePaymentMethodSummary.Online;
-  const availableBalance=expectedCash+expectedOnline;
   const expectedCashForEntry=editing?.recordType==='adjustment'?expectedCash-Number(editing.cashAdjustmentMinor||0):expectedCash;
   const expectedOnlineForEntry=editing?.recordType==='adjustment'?expectedOnline-Number(editing.onlineAdjustmentMinor||0):expectedOnline;
-  const methodTotal = (paymentMethod, direction) => paymentMethodSummary[paymentMethod][direction];
   const integrityIssueCount=rows.filter(transactionIntegrityIssue).length+rows.filter(t=>duplicateIds.has(t.id)).length;
   useEffect(()=>{
     if(!connectionRestored||!endpoint)return;
@@ -188,11 +192,12 @@ function App() {
     setConnectionInfo(info);
     try { write('rf.connectionInfo', info); } catch { /* A later successful read can restore version info. */ }
   }
-  async function refresh(target = endpoint) {
+  async function refresh(target = endpoint,{reuseFresh=false}={}) {
     if (!target || refreshInFlight.current) return;
     refreshInFlight.current=true;setRefreshing(true);setError('');
     try {
-      const result=await request(target);
+      const result=target===endpoint&&accountsEnabled?await (reuseFresh?accounts.refreshIfStale():accounts.reload()):await request(target);
+      if(!result)throw new Error('Google Sheets could not be refreshed.');
       if(target!==endpointRef.current)return;
       const savedAt=new Date().toISOString();
       setRows(overlayOutbox(result.transactions,outboxRef.current,target));setCacheSavedAt(savedAt);rememberInfo(target,result);setSynced(true);setNotice('Up to date with Google Sheets.');
@@ -201,6 +206,11 @@ function App() {
     catch (e) { if(target===endpointRef.current){setError(e.message);setSynced(false);} }
     finally { refreshInFlight.current=false;setRefreshing(false); }
   }
+  useEffect(()=>{
+    if(!accounts.loaded)return;
+    setRows(overlayOutbox(accounts.transactions,outboxRef.current,endpoint));setCacheSavedAt(accounts.checkedAt||'');
+    if(!accounts.cached){setSynced(true);saveTransactionCache(endpoint,accounts.transactions,accounts.checkedAt).catch(()=>{});}
+  },[accounts.loaded,accounts.transactions,accounts.checkedAt,accounts.cached,endpoint]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -217,7 +227,7 @@ function App() {
         if(cached){setRows(overlayOutbox(cached.transactions,outboxRef.current,saved));setCacheSavedAt(cached.savedAt||'');}
         setModal('');
         setConnectionRestored(true);
-        refresh(saved);
+        refresh(saved,{reuseFresh:true});
       } else {
         setModal('settings');
         setConnectionRestored(true);
@@ -291,7 +301,7 @@ function App() {
       setNotice(latest?'Latest payment loaded. Review and save your changes.':'This payment was deleted. Your attempted edit was not applied.');
     } catch(e) {setError(e.message);} finally {lock.current=false;setBusy(false);}
   }
-  function chooseCategory(value) { setForm(previous => ({...previous,category:value,direction:value==='Sale'?'in':'out'})); }
+  function chooseCategory(value) { setForm(previous => ({...previous,category:value,direction:previous.explicitChoices?previous.direction:value==='Sale'?'in':'out'})); }
   function changeRecordType(value) {
     setForm(previous=>value==='transfer'
       ? {...previous,recordType:'transfer',category:'Transfer',direction:'transfer',method:'Transfer'}
@@ -299,10 +309,10 @@ function App() {
         ? {...previous,recordType:'adjustment',category:'Cashflow adjustment',direction:'adjustment',method:'Adjustment',adjustmentMethod:'Cash',countedBalance:'',preservedCashAdjustmentMinor:0,preservedOnlineAdjustmentMinor:0}
         : {...previous,recordType:'payment',category:categories.includes(previous.category)?previous.category:preferences.defaultCategory,direction:['in','out'].includes(previous.direction)?previous.direction:'in',method:methods.includes(previous.method)?previous.method:preferences.defaultMethod});
   }
-  function partyPayment(party,direction) {
+  function partyPayment(party) {
     if(lock.current)return false;
     if (hasDraft(form) && !window.confirm('Discard the current payment draft?')) return false;
-    setEditing(null);setForm({...newEntry(),partyId:party.id,party:party.name,direction,category:direction==='in'?'Sale':'Purchase'});setPaymentOpen(true);setError('');focusAmount();return true;
+    setEditing(null);setForm(partyPaymentEntry(party));setPaymentOpen(true);setError('');focusAmount();return true;
   }
   function openSettings() { setUrl(endpoint); setError(''); setSettingsFeedback(''); setModal('settings'); }
   function openTweak(type) {
@@ -413,6 +423,23 @@ function App() {
       applyConnectionPreferences(''); setEndpoint(''); setUrl(''); setRows([]); setConnectionInfo(null); setSynced(false); setError(''); setNotice('This browser is disconnected.');
     } catch { setError('Could not remove the saved connection. Check browser storage permissions.'); }
   }
+  function openActivity(row,action=''){
+    if(row.kind==='invoice'){setInvoiceOpenRequest({id:row.record.id,action,request:Date.now()});return;}
+    if(row.kind==='note'){setNoteOpenRequest({id:row.record.id,action,request:Date.now()});return;}
+    if(action==='edit')beginEdit(row.record);
+    else if(action==='delete')deleteTransaction(row.record);
+    else setTransactionSelection({endpoint,id:row.record.id,record:row.record,action});
+  }
+  async function bulkDelete(selection){
+    if(busy||accounts.busy||accounts.pending||outboxRef.current.length)return false;
+    const invoices=selection.filter(row=>row.kind==='invoice').length,notes=selection.filter(row=>row.kind==='note').length,payments=selection.filter(row=>row.kind==='payment').length;
+    selection=selection.map(row=>row.kind==='invoice'?{...row,expectedNotes:invoiceNoteRevision(accounts.notes,row.record.id)}:row);
+    const reason=window.prompt(`Delete ${selection.length} selected records (${invoices} invoices, ${notes} notes, ${payments} payments)? Deleted invoices also remove their notes from the active ledger. All Sheet rows are retained. Enter a reason:`);
+    if(!reason?.trim())return false;
+    setError('');
+    try{const fresh=await accounts.reload({fresh:true});if(!fresh)throw new Error('Refresh failed. Nothing was queued for deletion.');if(!versionAtLeast(fresh.backendVersion,'1.14.0'))throw new Error('Deploy backend 1.14.0 before bulk deletion.');const operations=planBulkDelete(selection,fresh,reason.trim());if(await accounts.queueDeletes(operations)){setNotice(`${selection.length} selected records queued for deletion. Follow progress in Sync status.`);return true;}}
+    catch(error){setError(error.message);}return false;
+  }
   async function deleteTransaction(transaction) {
     if (lock.current || outbox.some(item=>item.id===transaction.id)) return;
     if (!window.confirm(`Delete ${money(transaction.amountMinor)} · ${transaction.party || transaction.category} on ${transaction.transactionDate}? This removes it from your ledger and reports.`)) return;
@@ -425,30 +452,27 @@ function App() {
   return <>
     <aside className="sidebar"><a className="brand" href="#"><img className="brand-logo" src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History']].map(([key,icon,label])=><button key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon">RF</div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
     <main><header className="topbar"><button className="outline" onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>⚙ Settings</button>{installPrompt && <button className="outline install-button" onClick={installApp}>＋ Install app</button>}<span className={`connection ${synced ? 'connected' : ''}`}><i/> {refreshing?'Updating from Sheets…':synced ? 'Sheets connected' : endpoint ? 'Connection not verified' : 'Sheets not connected'}</span></header>
-      {(view==='history'||view==='dashboard')&&<section className="heading"><div><h1>{view==='history'?'Payment history':'Your shop, at a glance'}</h1></div>{view==='dashboard'&&<div className="dashboard-actions"><button className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ Create Invoice <kbd>Alt + I</kbd></button><button className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
+      {(view==='history'||view==='dashboard')&&<section className="heading"><div><h1>{view==='history'?'History':'Dashboard'}</h1></div>{<div className="dashboard-actions"><button className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ Create Invoice <kbd>Alt + I</kbd></button><button className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
       {!endpoint && <div className="setup-banner"><div><strong>Let’s connect your ledger.</strong><span>Connect Google Sheets to start recording payments.</span></div><button onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>Connect Sheets ↗</button></div>}
       <div aria-live="polite">{notice && <p className="notice">{notice}</p>}{error && !modal && <p className="error" role="alert">{error}</p>}</div>
       {cacheSavedAt && (refreshing || (error && !synced)) && <div className={`cache-status ${error&&!synced?'cache-stale':''}`} role="status" aria-live="polite">{refreshing&&<i className="upload-spinner" aria-hidden="true"/>}<span><strong>{refreshing?'Showing saved transactions while checking Google Sheets.':'Showing saved transactions; Google Sheets could not be refreshed.'}</strong><small>Last saved snapshot: {new Date(cacheSavedAt).toLocaleString()}</small></span>{error&&!synced&&<button onClick={()=>refresh()} disabled={refreshing}>Retry refresh</button>}</div>}
       {integrityIssueCount>0 && <p className="integrity-warning" role="alert">{integrityIssueCount} Sheet record{integrityIssueCount===1?' has':'s have'} invalid or inconsistent transaction data. Affected records are excluded from totals; review those rows in Transactions before using the report.</p>}
-      {pending && <div className={`upload-status ${pending._status==='failed'?'failed':''}`} role={pending._status==='failed'?'alert':'status'} aria-live="polite"><span className={pending._status==='failed'?'':'upload-spinner'} aria-hidden="true">{pending._status==='failed'?'!':''}</span><div><strong>{pending._status==='failed'?'Could not upload to Google Sheets':pending._action==='delete'?'Uploading deletion to Google Sheets…':pending._action==='update'?'Uploading changes to Google Sheets…':'Uploading transaction to Google Sheets…'}</strong>{outbox.length>1&&<small>{outbox.length-1} more change{outbox.length===2?'':'s'} waiting</small>}{pending._status==='failed'&&<small>{pending._error||'Check your connection and retry.'}</small>}</div>{pending._status==='failed'&&<button onClick={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload}>{editConflict&&outbox.length===1?'Reload latest':'Retry upload'}</button>}</div>}
-      {accounts.pending&&['createInvoice','createParty'].includes(accounts.pending.action)&&<div className={`upload-status ${accounts.error&&!accounts.busy?'failed':''}`} role="status" aria-live="polite"><span className={accounts.busy?'upload-spinner':''} aria-hidden="true">{accounts.busy?'':'!'}</span><div><strong>{accounts.busy?accounts.pending.action==='createParty'?'Saving party to Google Sheets…':'Uploading invoice to Google Sheets…':'Saved upload needs attention'}</strong><small>{accounts.error||'Saved on this device. Party and invoice requests upload in order.'}</small>{accounts.queue.length>1&&<small>{accounts.queue.length-1} more request(s) waiting</small>}</div>{!accounts.busy&&<button disabled={!accountsEnabled||accounts.pending.endpoint!==endpoint||accounts.pending.invalid} onClick={accounts.retry}>Retry upload</button>}{accounts.rejected&&!accounts.busy&&<button onClick={()=>setView('accounts')}>Review rejected upload</button>}</div>}
+      <SyncStatus endpoint={endpoint} accounts={accounts} outbox={outbox} synced={synced} refreshing={refreshing} readError={error&&!synced?error:''} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')}/>
       {!accounts.pending&&accounts.lastInvoice&&<p className="notice" role="status">Invoice {accounts.lastInvoice.number} saved to Google Sheets. <button className="outline" onClick={()=>setInvoiceOpenRequest({id:accounts.lastInvoice.id,request:Date.now()})}>View invoice</button></p>}
-      {paymentOpen&&<AccountDialog className="payment-dialog" title={editing?'Edit payment':form.recordType==='transfer'?'Cash ↔ Online exchange':form.recordType==='adjustment'?'Adjust a balance':form.partyId?`${form.direction==='in'?'Receive payment':'Make payment'} · ${form.party}`:'Record Payment'} busy={busy} onClose={closePayment}>
+      {transactionDetail&&<TransactionDetails preferences={preferences} initialAction={transactionSelection?.action} onPreparePrint={async()=>{const fresh=accountsEnabled?await accounts.reload({fresh:true}):await request(endpoint);const record=fresh?.transactions.find(row=>row.id===transactionDetail.id);if(!record)throw new Error('Refresh and confirm this payment before printing.');return record;}} onEdit={()=>{setTransactionSelection(null);beginEdit(transactionDetail);}} onDelete={()=>{setTransactionSelection(null);deleteTransaction(transactionDetail);}} transaction={transactionDetail} duplicate={duplicateIds.has(transactionDetail.id)} queued={outbox.filter(item=>item.id===transactionDetail.id).at(-1)} onClose={()=>setTransactionSelection(null)}/>}
+      {paymentOpen&&<AccountDialog className="payment-dialog" title={editing?'Edit payment':form.recordType==='transfer'?'Cash ↔ Online exchange':form.recordType==='adjustment'?'Adjust a balance':form.partyId?`${form.direction==='in'?'Receive payment':form.direction==='out'?'Make payment':'Record payment'} · ${form.party}`:'Record Payment'} busy={busy} onClose={closePayment}>
         {error&&<p className="error" role="alert">{error}</p>}
         {pending?._status==='failed'&&<div className="account-pending" role="alert"><p>{pending._error||'A payment could not upload. Retry it before adding another.'}</p><button type="button" className="outline" onClick={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload}>{editConflict&&outbox.length===1?'Reload latest':'Retry upload'}</button></div>}
         <PaymentEntry compact parties={accounts.parties} accountsEnabled={accountsEnabled} editing={editing} cancelEdit={closePayment} returnToPayment={startNew} form={form} update={update} chooseCategory={chooseCategory} save={save} formRef={formRef} amountRef={amountRef} busy={busy} refreshing={refreshing} pending={pending} endpoint={endpoint} rows={rows} refresh={refresh} openHistory={()=>{closePayment();setView('history');}} focusAndCenter={focusAndCenter} expectedCashMinor={expectedCashForEntry} expectedOnlineMinor={expectedOnlineForEntry}/>
       </AccountDialog>}
-      <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
+      <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel challanEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.13.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.12.0')} deletionEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.11.0')} noteOpenRequest={noteOpenRequest} notesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.10.0')} invoiceEditingEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.9.0')} invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
       <div className={`report-view ${view==='accounts'?'screen-hidden':''}`}>
-      <section className="period-bar"><div><span className="calendar-icon">▦</span><select aria-label="Report period" value={period} onChange={e => selectPeriod(e.target.value)}><option value="month">This month</option><option value="today">Today</option><option value="last">Last month</option><option value="custom">Custom period</option></select></div><div className="date-range"><input aria-label="Start date" type="date" value={range[0]} onChange={e => {setPeriod('custom');setRange([e.target.value,range[1]]);}}/><span>—</span><input aria-label="End date" type="date" value={range[1]} onChange={e => {setPeriod('custom');setRange([range[0],e.target.value]);}}/></div><button className="refresh" disabled={busy || refreshing || !endpoint} onClick={() => refresh()}>{refreshing ? '◌ Updating…' : '↻ Refresh'}</button></section>
+      <section className="period-bar"><div><span className="calendar-icon">▦</span><select aria-label="Report period" value={period} onChange={e => selectPeriod(e.target.value)}><option value="month">This month</option><option value="today">Today</option><option value="last">Last month</option><option value="custom">Custom period</option></select></div><div className="date-range"><input aria-label="Start date" type="date" value={range[0]} onChange={e => {setPeriod('custom');setRange([e.target.value,range[1]]);}}/><span>—</span><input aria-label="End date" type="date" value={range[1]} onChange={e => {setPeriod('custom');setRange([range[0],e.target.value]);}}/></div><button className="refresh" disabled={busy || refreshing || !endpoint} onClick={() => {refresh();}}>{refreshing ? '◌ Updating…' : '↻ Refresh'}</button></section>
       {range[0] > range[1] && <p className="error">The start date must be on or before the end date.</p>}
-      <div className={view==='dashboard'?'dashboard-overview':'dashboard-overview screen-hidden'}><InvoiceDashboard accounts={accounts} range={range} onOpenInvoice={id=>setInvoiceOpenRequest({id,request:Date.now()})}/><div className="section-title dashboard-category-heading"><h2>Payments by category</h2><span>For the selected period</span></div><section className="category-grid">{dashboardCategoryOrder.map(name => { const records = categoryRows.filter(t => t.category === name); return <button key={name} aria-pressed={category===name} className={`category-card tone-${categories.indexOf(name)} ${category===name?'selected':''}`} onClick={() => setCategory(category===name?'':name)}><span className="category-symbol">{symbols[name]}</span><span className="category-name">{name}<small>{name==='Bhara'?'Transport & delivery':`${records.length} transaction${records.length===1?'':'s'}`}</small></span><strong>{money(sumAmounts(records))}</strong><span className="card-arrow">↗</span></button>; })}</section>
-      <section className="current-balances"><div className="section-title"><div><h2>Current balances</h2><span>All-time expected balances from recorded cash and online movements.</span></div></div><div className="current-balance-grid"><article className="summary-card balance-card"><div><span>Cash in hand</span><b>₹</b></div><h2>{money(expectedCash)}</h2><p>Expected cash balance</p></article><article className="summary-card balance-card online-balance"><div><span>Online balance</span><b>↗</b></div><h2>{money(expectedOnline)}</h2><p>Expected online balance</p></article><article className="summary-card balance-card available-balance"><div><span>Available balance</span><b>Σ</b></div><h2>{money(availableBalance)}</h2><p>Cash in hand + online</p></article></div></section>
-      <section className="payment-breakdown"><div className="section-title"><h2>Cash & online</h2><span>For the selected period</span></div><div className="payment-method-grid" aria-label="Cash and online payment totals"><article className="method-total period-total"><span>Total payment in</span><strong>{money(summary.in)}</strong><small>Money received · selected period</small></article><article className="method-total period-total"><span>Total payment out</span><strong>{money(summary.out)}</strong><small>Money paid · selected period</small></article>{[['Cash received','Cash','in'],['Online received','Online','in'],['Cash paid','Cash','out'],['Online paid','Online','out']].map(([label,paymentMethod,direction])=><article className={`method-total ${direction}`} key={label}><span>{label}</span><strong>{money(methodTotal(paymentMethod,direction))}</strong><small>Payment {direction} · {paymentMethod}</small></article>)}</div></section>
-      </div><section className="transactions" id="transactions"><div className="transaction-heading"><div><h2>Transactions</h2><p>Every payment, all in one place.</p></div><button className="outline" onClick={() => window.print()}>▤ Print A4 report</button></div>{view==='history'&&<div className="history-category-tabs" role="group" aria-label="Transaction category">{['',...categories].map(value=><button key={value||'all'} type="button" className={historyCategory===value?'active':''} aria-pressed={historyCategory===value} onClick={()=>setHistoryCategory(value)}>{value||'All'}</button>)}</div>}<div className="filters"><input type="search" aria-label="Search transactions" placeholder="Search name or notes…" value={query} onChange={e=>setQuery(e.target.value)}/>{view!=='history'&&<select aria-label="Filter category" value={category} onChange={e=>setCategory(e.target.value)}><option value="">All types</option>{categories.map(c=><option key={c}>{c}</option>)}<option value="Transfer">Cash/Online exchange</option><option value="Cashflow adjustment">Cashflow adjustment</option></select>}<select aria-label="Filter payment method" value={method} onChange={e=>setMethod(e.target.value)}><option value="">All payment methods</option>{methods.map(m=><option key={m}>{m}</option>)}<option value="Transfer">Cash/Online exchange</option><option value="Adjustment">Cashflow adjustment</option></select></div>
-      <div className="print-heading"><div className="print-brand"><img src={brandLogo} alt=""/><div><h1>{preferences.shopName}</h1><p className="print-tagline">Apne Gar ko do ROYAL touch sirf Royal Furnitures se</p></div></div>{preferences.printContact && <div className="print-contact">{preferences.address && <p>{preferences.address}</p>}{preferences.phone && <p>Phone: {preferences.phone}</p>}</div>}<h2>Transaction report</h2><p>{range[0]} to {range[1]} · {activeCategory || 'All types'} · {method || 'All payment methods'}{query && ` · Search: ${query}`}</p><p>Payment in: {money(summary.in)} · Payment out: {money(summary.out)}</p><p>{synced ? 'Google Sheets records' : 'Cached records — refresh to confirm latest data'} · Timezone: {SHOP_TIMEZONE}</p></div>
-      {visible.length ? <div className="table-wrap"><table><thead><tr><th>Transaction / Party</th><th>Date & time</th><th>Payment</th><th className="notes-heading">Notes</th><th className="amount">Amount</th></tr></thead><tbody>{visible.map(t=>{const transfer=t.recordType==='transfer';const adjustment=t.recordType==='adjustment';const title=adjustment?'Cashflow adjustment':transfer?'Cash/Online exchange':t.party||t.category;const rowQueued=outbox.some(item=>item.id===t.id);return <tr key={t.id}><td><span className={`row-symbol ${t.direction}`}>{symbols[t.category] || '⇄'}</span><div className="party"><strong>{title}</strong><small>{adjustment?'Balance correction':transfer?`${t.fromMethod} → ${t.toMethod}`:`${t.category}${t.category==='Bhara'?' · Delivery':''}`}</small></div></td><td>{t.transactionDate}<small>{t.transactionTime}</small></td><td><span className="badge">{adjustment?'Cash & online':transfer?`${t.fromMethod} → ${t.toMethod}`:t.method}</span>{!transfer && t.chequeDate && <small>Given: {t.chequeDate}</small>}{!transfer && Number(t.cashReceivedMinor)>Number(t.amountMinor) && <small>Cash received {money(t.cashReceivedMinor)} · Cash change {money(t.cashChangeMinor || 0)} · Online change {money(t.onlineChangeMinor || 0)}</small>}{adjustment && <small>Cash {money(t.expectedCashMinor)} → {money(t.countedCashMinor)} · Online {money(t.expectedOnlineMinor)} → {money(t.countedOnlineMinor)}</small>}{transfer && <small>Balance exchange · no income/expense</small>}</td><td className="notes-cell">{t.notes || '—'}</td><td className={`amount ${t.direction==='in'?'in':t.direction==='out'?'out':''}`}>{adjustment?'±':t.direction==='in'?'+':t.direction==='out'?'−':''}{money(t.amountMinor)}<small>{adjustment?'Balance adjustment':transfer?'Balance exchange':`Payment ${t.direction}`}</small><button className="edit-transaction" disabled={busy || rowQueued || !endpoint} aria-label={`Edit transaction for ${title}, ${money(t.amountMinor)}`} onClick={()=>beginEdit(t)}>Edit</button><button className="delete-transaction" disabled={busy || rowQueued || !endpoint} aria-label={`Delete transaction for ${title}, ${money(t.amountMinor)}, ${t.transactionDate}`} onClick={()=>deleteTransaction(t)}>Delete</button></td></tr>;})}</tbody></table></div> : <div className="empty"><span>▤</span><h3>No transactions in this period</h3><p>{rows.length ? 'Try a different period or clear your filters.' : 'Your first payment is the start of a clearer picture.'}</p>{view==='dashboard'&&<button onClick={openEntry}>＋ Record a payment</button>}</div>}
-      <div className="table-footer"><span>{visible.length} transaction{visible.length===1?'':'s'}</span><span>Amounts in INR · {SHOP_TIMEZONE}</span></div></section></div><footer>{preferences.shopName}<a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
+      {view==='dashboard'&&<DashboardOverview accounts={accounts} transactions={calculationRows.filter(row=>!outbox.some(op=>op.id===row.id))} range={range} cash={expectedCash} online={expectedOnline}/>}
+      {view==='history'&&<section className="history-controls"><div className="history-category-tabs" role="group" aria-label="Transaction category">{['',...categories].map(value=><button key={value||'all'} type="button" className={historyCategory===value?'active':''} aria-pressed={historyCategory===value} onClick={()=>setHistoryCategory(value)}>{value||'All'}</button>)}</div><div className="activity-filters"><input type="search" aria-label="Search history" placeholder="Search party, reference, challan, item or notes…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Filter payment method" value={method} onChange={e=>setMethod(e.target.value)}><option value="">All payment methods</option>{methods.map(value=><option key={value}>{value}</option>)}<option value="Transfer">Cash/Online exchange</option><option value="Adjustment">Cashflow adjustment</option></select><button type="button" className="outline" onClick={()=>window.print()}>Print history</button></div></section>}
+      <ActivityTable key={view} accounts={accounts} transactions={rows} outbox={outbox} range={range} category={view==='history'?historyCategory:''} method={view==='history'?method:''} query={view==='history'?query:''} history={view==='history'} printing={printingTransactions} editingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.9.0')} deletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.11.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.12.0')} bulkDeleteEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.0')&&!outbox.length} onBulkDelete={bulkDelete} paymentBusy={busy||!endpoint||!!accounts.pending} onOpen={row=>openActivity(row)} onEdit={row=>openActivity(row,'edit')} onDelete={row=>openActivity(row,'delete')} onPrint={row=>openActivity(row,'print')} onHistory={()=>{setHistoryCategory('');setView('history');}}/>
+      </div><footer>{preferences.shopName}<a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
     </main>
     <nav className="mobile-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History']].map(([key,icon,label])=><button key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button onClick={openSettings}><span>⚙</span>Settings</button></nav>
     <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><p className="eyebrow">SHOP LEDGER</p><h2>Settings & sheet setup</h2></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}

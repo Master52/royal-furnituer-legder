@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { accountBackend } from './helpers/accountBackend.js';
-import { makeParty, makeInvoice, partyStatement, invoiceSummary, accountBalances, findParties, invoiceDraftFromRecord, MAX_MINOR } from '../src/accounts.js';
+import { makeParty, makeInvoice, partyStatement, invoiceSummary, accountBalances, findParties, invoiceDraftFromRecord, historyInvoices, MAX_MINOR } from '../src/accounts.js';
 import { makeTransaction, paymentMethodBalance } from '../src/ledger.js';
 const partyId='party-000000000000000001';
 const invoiceId='invoice-00000000000000001';
@@ -137,4 +137,75 @@ test('invoice limits and draft restoration preserve precise values and unknown c
   assert.throws(()=>makeInvoice({...draft,items:Array(51).fill(draft.items[0])},invoiceId));
   assert.equal(makeInvoice({...draft,items:Array(50).fill({...draft.items[0],rate:'1',cost:'0'})},invoiceId).items.length,50);
   assert.throws(()=>makeParty({...party,name:' ',openingBalance:'0'},partyId));
+});
+
+const invoiceEdit=(invoice,revision=0,editId='edit-invoice-000000000001',rate='25000')=>({...makeInvoice({...draft,items:[{...draft.items[0],rate}]},invoice.id),invoiceNumber:invoice.invoiceNumber,_expectedRevision:revision,_editId:editId});
+test('invoice edits retain number, identity and contact snapshot; totals change without changing payments',()=>{
+  const b=accountBackend();b.post('createParty',party);const original=makeInvoice(draft,invoiceId),issued=b.post('createInvoice',original).record;b.post('create',payment());
+  const sheet=b.tabs.get('Invoices');sheet.data[0].push('futureColumn');sheet.data[1].push('untouched');
+  const result=b.post('updateInvoice',invoiceEdit(issued));assert.equal(result.ok,true);assert.equal(result.record.id,invoiceId);assert.equal(result.record.invoiceNumber,issued.invoiceNumber);assert.equal(result.record.revision,1);assert.equal(result.record.createdAt,issued.createdAt);assert.equal(result.record.partyName,issued.partyName);assert.equal(result.record.totalMinor,2500000);
+  const current=b.post('listAccounts',{});assert.equal(current.ok,true);assert.equal(current.transactions.length,1);assert.equal(partyStatement(party,current.invoices,current.transactions).closing,2000000);assert.equal(invoiceSummary(current.invoices,'2026-01-01','2026-12-31').grossProfit,1100000);
+  assert.equal(current.invoices[0].futureColumn,'untouched');assert.equal(b.tabs.get('InvoiceItems').data.length,3);
+  const history=b.tabs.get('InvoiceHistory');assert.equal(history.data.length,2);assert.equal(JSON.parse(history.data[1][history.data[0].indexOf('snapshot')]).totalMinor,2000000);
+  assert.equal(b.post('createInvoice',original).ok,true);assert.equal(b.post('createInvoice',original).record.totalMinor,2500000);
+});
+test('invoice edit retries are idempotent and stale or reused edits cannot overwrite another revision',()=>{
+  const b=accountBackend();b.post('createParty',party);const issued=b.post('createInvoice',makeInvoice(draft,invoiceId)).record,edit=invoiceEdit(issued);
+  assert.equal(b.post('updateInvoice',edit).ok,true);assert.equal(b.post('updateInvoice',edit).record.revision,1);assert.equal(b.tabs.get('InvoiceItems').data.length,3);assert.equal(b.tabs.get('InvoiceHistory').data.length,2);
+  assert.equal(b.post('updateInvoice',invoiceEdit(issued,0,'edit-invoice-000000000002')).code,'EDIT_CONFLICT');
+  assert.equal(b.post('updateInvoice',invoiceEdit(issued,0,edit._editId,'26000')).ok,false);
+  const second=b.post('updateInvoice',invoiceEdit(issued,1,'edit-invoice-000000000003','27000'));assert.equal(second.record.revision,2);assert.equal(b.post('listAccounts',{}).invoices[0].items.length,1);assert.equal(b.post('listAccounts',{}).invoices[0].totalMinor,2700000);
+  assert.equal(b.post('updateInvoice',edit).record.revision,2);assert.equal(b.post('updateInvoice',edit).record.totalMinor,2700000);
+  b.post('cancelInvoice',{id:invoiceId,reason:'Cancelled'});assert.equal(b.post('updateInvoice',invoiceEdit(issued,3,'edit-invoice-000000000004')).ok,false);assert.equal(b.post('updateInvoice',invoiceEdit(issued,1,'edit-invoice-000000000003','27000')).record.status,'cancelled');
+});
+test('interrupted invoice edits leave the original usable and recover with exactly one committed version',()=>{
+  for(const tab of ['InvoiceHistory','InvoiceItems','Invoices']){
+    const b=accountBackend();b.post('createParty',party);const issued=b.post('createInvoice',makeInvoice(draft,invoiceId)).record,edit=invoiceEdit(issued);
+    b.failNext(tab);assert.equal(b.post('updateInvoice',edit).ok,false,tab);let result=b.post('listAccounts',{});assert.equal(result.ok,true);assert.equal(result.invoices[0].totalMinor,issued.totalMinor);assert.equal(result.invoices[0].revision,0);
+    assert.equal(b.post('updateInvoice',edit).ok,true);result=b.post('listAccounts',{});assert.equal(result.invoices[0].totalMinor,2500000);assert.equal(result.invoices[0].items.length,1);assert.equal(b.tabs.get('InvoiceHistory').data.length,2);
+  }
+});
+test('old invoice headers remain readable and edits append schema without changing historical item rows',()=>{
+  const b=accountBackend();b.post('createParty',party);const issued=b.post('createInvoice',makeInvoice(draft,invoiceId)).record;
+  for(const [tab,fields] of [['Invoices',['revision','lastEditId','updatedAt','itemVersion']],['InvoiceItems',['versionId']]]){
+    const sheet=b.tabs.get(tab);for(const field of fields){const index=sheet.data[0].indexOf(field);sheet.data.forEach(row=>row.splice(index,1));}
+  }
+  const before=[...b.tabs.get('InvoiceItems').data[1]];assert.equal(b.post('listAccounts',{}).ok,true);assert.equal(b.post('updateInvoice',invoiceEdit(issued)).ok,true);assert.deepEqual(b.tabs.get('InvoiceItems').data[1].slice(0,before.length),before);assert.equal(b.post('listAccounts',{}).invoices[0].revision,1);
+});
+test('invoice edits validate dates and fixed fields before staging any new version',()=>{
+  const b=accountBackend();b.post('createParty',party);const issued=b.post('createInvoice',makeInvoice(draft,invoiceId)).record;
+  for(const patch of [{partyId:'party-000000000000000002'},{type:'purchase'},{invoiceNumber:'RF-S-999999'},{invoiceDate:'2025-12-31'},{items:[]}])assert.equal(b.post('updateInvoice',{...invoiceEdit(issued),...patch}).ok,false);
+  assert.equal(b.tabs.get('InvoiceItems').data.length,2);assert.equal(b.post('listAccounts',{}).invoices[0].totalMinor,2000000);
+});
+
+
+test('ledger interleaves invoices and payments by date and shop time, with correct running balances',()=>{
+  const day='2026-09-02';
+  const sale={...makeInvoice({...draft,invoiceDate:day},invoiceId),status:'issued',createdAt:'2026-09-02T04:30:00Z',totalMinor:10000}; // 10:00 in India
+  const purchase={...sale,id:'purchase-order',type:'purchase',createdAt:'2026-09-02T06:30:00Z',totalMinor:3000}; // 12:00
+  const receipt={...payment('in','20'),id:'receipt-middle',transactionTime:'11:00',amountMinor:2000};
+  const early={...payment('out','10'),id:'payment-first',transactionTime:'09:00',amountMinor:1000};
+  const late={...payment('in','40'),id:'receipt-last',transactionTime:'13:00',amountMinor:4000};
+  const opening={...party,openingDate:day,openingBalanceMinor:500};
+  const statement=partyStatement(opening,[purchase,sale],[late,early,receipt]);
+  assert.deepEqual(statement.entries.map(row=>row.id),['opening-'+party.id,'payment-first',sale.id,'receipt-middle','purchase-order','receipt-last']);
+  assert.deepEqual(statement.entries.map(row=>row.balance),[500,1500,11500,9500,6500,2500]);
+  assert.equal(statement.closing,2500);
+  assert.equal(partyStatement(opening,[purchase,sale],[late,early,receipt],'2026-09-03').opening,2500);
+  const nextDay={...sale,id:'next-day',invoiceDate:'2026-09-03',createdAt:'2026-09-02T00:00:00Z'};
+  assert.equal(partyStatement(party,[nextDay,sale],[]).entries.at(-1).id,'next-day');
+  const legacy={...sale,id:'legacy',createdAt:''};
+  assert.equal(partyStatement(party,[sale,legacy],[early]).entries[0].id,'legacy');
+});
+test('invoice History filters dates, category, number, party, item and notes while retaining cancellations',()=>{
+  const sale={...makeInvoice(draft,invoiceId),partyName:'Rahul',invoiceNumber:'RF-S-000001',status:'issued',createdAt:'2026-09-01T05:00:00Z'};
+  const purchase={...sale,id:'purchase-history',type:'purchase',invoiceNumber:'RF-P-000001',status:'cancelled',notes:'Returned wood',createdAt:'2026-09-01T06:00:00Z'};
+  const invoices=[sale,purchase,{...sale,id:'older',invoiceDate:'2026-08-31'}];
+  const filter=(category='',query='')=>historyInvoices(invoices,'2026-09-01','2026-09-30',category,query);
+  assert.deepEqual(filter().map(row=>row.id),[purchase.id,sale.id]);
+  assert.equal(filter('Sale').length,1);assert.equal(filter('Purchase')[0].status,'cancelled');
+  assert.equal(filter('Expense').length,0);assert.equal(filter('Bhara').length,0);
+  assert.equal(filter('','rf-p')[0].id,purchase.id);assert.equal(filter('','rahul').length,2);
+  assert.equal(filter('','sofa').length,2);assert.equal(filter('','returned')[0].id,purchase.id);
+  assert.equal(filter('','missing').length,0);
 });

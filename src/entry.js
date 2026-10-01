@@ -4,7 +4,7 @@ export function newEntry(previous = {}) {
   const method=['Cash','Online','Cheque'].includes(previous.method)?previous.method:'Cash';
   return { amount: '', direction: previous.direction==='out'?'out':'in', category, method, party: '', partyId: '', notes: '', dateTime: localNow(), chequeDate: '', customDate: false, recordType:'payment', exchangeDirection:'receive-cash-send-online', cashReceived:'', cashChange:'', onlineChange:'', adjustmentMethod:'Cash', countedBalance:'', countedCash:'',countedOnline:'',preservedCashAdjustmentMinor:0,preservedOnlineAdjustmentMinor:0 };
 }
-export function hasDraft(form) { return Boolean(form.amount || form.party || form.notes || form.chequeDate || form.cashReceived || form.cashChange || form.onlineChange || form.customDate || form.recordType==='transfer' || (form.recordType==='adjustment' && (form.countedBalance!=='' || form.countedCash!=='' || form.countedOnline!==''))); }
+export function hasDraft(form) { return Boolean(form.amount || (form.party&&!(form.explicitChoices&&form.partyId===form.initialPartyId&&form.party===form.initialPartyName)) || (form.explicitChoices&&(form.direction||form.category||form.method)) || form.notes || form.chequeDate || form.cashReceived || form.cashChange || form.onlineChange || form.customDate || form.recordType==='transfer' || (form.recordType==='adjustment' && (form.countedBalance!=='' || form.countedCash!=='' || form.countedOnline!==''))); }
 export function editEntry(t) {
   const adjustmentMethod=t.direction==='adjustment-cash'?'Cash':t.direction==='adjustment-online'?'Online':Number(t.cashAdjustmentMinor)!==0?'Cash':'Online';
   const adjustmentValue=adjustmentMethod==='Cash'?t.countedCashMinor:t.countedOnlineMinor;
@@ -37,3 +37,5 @@ export function focusAndCenter(element) {
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(scroll);
   else scroll();
 }
+
+export function partyPaymentEntry(party){return {...newEntry(),partyId:party.id,party:party.name,direction:'',category:'',method:'',explicitChoices:true,initialPartyId:party.id,initialPartyName:party.name};}

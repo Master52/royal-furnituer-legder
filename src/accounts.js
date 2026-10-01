@@ -1,4 +1,4 @@
-import { localNow, transactionIntegrityIssue, duplicateTransactionIds } from './ledger.js';
+import { localNow, transactionIntegrityIssue, duplicateTransactionIds, SHOP_TIMEZONE } from './ledger.js';
 
 export const ACCOUNTS_VERSION = '1.8.0';
 export const MAX_MINOR = 100000000000;
@@ -12,7 +12,7 @@ export function validDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '' });
-export const blankInvoice = () => ({ partyId: '', type: 'sale', invoiceNumber: '', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
+export const blankInvoice = () => ({ partyId: '', type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
 export function makeParty(form, id = crypto.randomUUID()) {
   const name = form.name.trim();
   if (!name || name.length > 150) throw new Error('Enter a party name (up to 150 characters).');
@@ -22,6 +22,7 @@ export function makeParty(form, id = crypto.randomUUID()) {
 export function makeInvoice(form, id = crypto.randomUUID()) {
   if (!form.partyId || !['sale', 'purchase'].includes(form.type)) throw new Error('Choose a party and invoice type.');
   if (form.invoiceNumber && form.invoiceNumber.trim().length > 80) throw new Error('Invoice number is too long.');
+  if(typeof (form.challanNumber??'')!=='string'||(form.challanNumber??'').trim().length>80)throw new Error('Challan number must be at most 80 characters.');
   if (!validDate(form.invoiceDate)) throw new Error('Choose a valid invoice date.');
   if (!form.items.length || form.items.length > 50) throw new Error('Add between 1 and 50 invoice items.');
   let totalMinor = 0, costTotalMinor = 0, completeCost = true;
@@ -42,7 +43,7 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
     return { id: `${id}-${index + 1}`, invoiceId: id, description, quantityMilli, rateMinor, discountMinor, lineTotalMinor, costMinor, lineCostMinor };
   });
   if (totalMinor <= 0 || totalMinor > MAX_MINOR || costTotalMinor > MAX_MINOR) throw new Error('Invoice total must be positive and within the supported amount limit.');
-  return { id, schemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: '', invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
+  return { id, schemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
 }
 
 export function findParties(parties, query, limit = 8) {
@@ -69,18 +70,34 @@ export function findParties(parties, query, limit = 8) {
   }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||a.party.name.localeCompare(b.party.name)).slice(0,limit).map(row=>row.party);
 }
 
-export function partyStatement(party, invoices, transactions, start = '0000-01-01', end = '9999-12-31') {
+const statementTimeFormatter = new Intl.DateTimeFormat('en-GB', {timeZone: SHOP_TIMEZONE, hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'});
+function statementTime(createdAt) {
+  const timestamp = Date.parse(createdAt);
+  return Number.isFinite(timestamp) ? statementTimeFormatter.format(new Date(timestamp)) : '00:00:00';
+}
+export function historyInvoices(invoices, start, end, category = '', query = '') {
+  const search = query.trim().toLowerCase();
+  return invoices.filter(invoice => invoice.invoiceDate >= start && invoice.invoiceDate <= end
+    && (!category || category === (invoice.type === 'sale' ? 'Sale' : 'Purchase'))
+    && (!search || [invoice.invoiceNumber, invoice.partyName, invoice.notes,invoice.challanNumber,invoice.itemSearch, ...(invoice.items || []).map(item => item.description)].join(' ').toLowerCase().includes(search)))
+    .sort((a,b) => b.invoiceDate.localeCompare(a.invoiceDate) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || b.id.localeCompare(a.id));
+}
+export function partyStatement(party, invoices, transactions, start = '0000-01-01', end = '9999-12-31', notes = []) {
   const events = [];
-  if (Number(party.openingBalanceMinor)) events.push({ id: `opening-${party.id}`, date: party.openingDate, sort: '0', description: 'Opening balance', delta: Number(party.openingBalanceMinor) });
+  if (Number(party.openingBalanceMinor)) events.push({ id: `opening-${party.id}`, date: party.openingDate, sort: '', description: 'Opening balance', delta: Number(party.openingBalanceMinor) });
   for (const invoice of invoices) {
     if (invoice.partyId !== party.id || invoice.status !== 'issued') continue;
-    events.push({ id: invoice.id, date: invoice.invoiceDate, sort: `1-${invoice.createdAt}-${invoice.id}`, description: `${invoice.type === 'sale' ? 'Sales' : 'Purchase'} invoice ${invoice.invoiceNumber}`, delta: Number(invoice.totalMinor) * (invoice.type === 'sale' ? 1 : -1), invoice });
+    events.push({ id: invoice.id, date: invoice.invoiceDate, sort: `${statementTime(invoice.createdAt)}-${invoice.createdAt || ''}-${invoice.id}`, description: `${invoice.type === 'sale' ? 'Sales' : 'Purchase'} invoice ${invoice.invoiceNumber}`, delta: Number(invoice.totalMinor) * (invoice.type === 'sale' ? 1 : -1), invoice });
+  }
+  for(const note of notes){
+    if(note.partyId!==party.id||note.status!=='issued')continue;
+    events.push({id:note.id,date:note.noteDate,sort:`${statementTime(note.createdAt)}-${note.createdAt || ''}-${note.id}`,description:`${note.type==='credit'?'Credit':'Debit'} note ${note.noteNumber} · ${note.invoiceNumber}`,notes:note.reason,delta:notePartyDelta(note)});
   }
   const duplicates = duplicateTransactionIds(transactions);
   for (const t of transactions) {
     if (t.partyId !== party.id || t.deletedAt || (t.recordType && t.recordType !== 'payment')) continue;
     if (duplicates.has(t.id) || transactionIntegrityIssue(t)) throw new Error('A linked payment is invalid or duplicated. Correct it before using this party balance.');
-    events.push({ id: t.id, date: t.transactionDate, sort: `2-${t.transactionTime}-${t.id}`, description: `Payment ${t.direction === 'in' ? 'received' : 'made'} · ${t.method}`, notes: t.notes, delta: Number(t.amountMinor) * (t.direction === 'in' ? -1 : 1) });
+    events.push({ id: t.id, date: t.transactionDate, sort: `${t.transactionTime.length === 5 ? t.transactionTime + ':00' : t.transactionTime}-${t.createdAt || ''}-${t.id}`, description: `Payment ${t.direction === 'in' ? 'received' : 'made'} · ${t.method}`, notes: t.notes, delta: Number(t.amountMinor) * (t.direction === 'in' ? -1 : 1) });
   }
   events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort));
   let balance = 0, opening = 0;
@@ -93,7 +110,7 @@ export function partyStatement(party, invoices, transactions, start = '0000-01-0
   }
   return { opening, closing: balance, entries };
 }
-export function invoiceSummary(invoices, start, end) {
+export function invoiceSummary(invoices, start, end, notes = []) {
   const result = { sales: 0, purchases: 0, grossProfit: 0, missingCosts: 0, costedSales: 0 };
   for (const inv of invoices) {
     if (inv.status !== 'issued' || inv.invoiceDate < start || inv.invoiceDate > end) continue;
@@ -104,14 +121,25 @@ export function invoiceSummary(invoices, start, end) {
       else { result.costedSales++; result.grossProfit += Number(inv.totalMinor) - Number(inv.costTotalMinor); }
     }
   }
+  for(const note of notes){
+    if(note.status!=='issued'||note.noteDate<start||note.noteDate>end)continue;
+    const value=noteValueSign(note)*Number(note.amountMinor);
+    if(note.invoiceType==='purchase')result.purchases+=value;
+    else {
+      result.sales+=value;
+      if(note.costAdjustmentMinor===null||note.costAdjustmentMinor==='')result.missingCosts++;
+      else result.grossProfit+=value-noteValueSign(note)*Number(note.costAdjustmentMinor);
+    }
+  }
   return result;
 }
 
 // Index balances once rather than scanning every invoice/payment for every party.
-export function accountBalances(parties,invoices,transactions){
+export function accountBalances(parties,invoices,transactions,notes=[]){
   const rows=new Map(parties.map(party=>[party.id,{party,balance:Number(party.openingBalanceMinor)||0,error:''}]));
   const duplicates=duplicateTransactionIds(transactions);
   for(const invoice of invoices){const row=rows.get(invoice.partyId);if(row&&invoice.status==='issued')row.balance+=Number(invoice.totalMinor)*(invoice.type==='sale'?1:-1);}
+  for(const note of notes){const row=rows.get(note.partyId);if(row&&note.status==='issued')row.balance+=notePartyDelta(note);}
   for(const payment of transactions){
     const row=rows.get(payment.partyId);
     if(!row||payment.deletedAt||payment.recordType&&payment.recordType!=='payment')continue;
@@ -121,5 +149,33 @@ export function accountBalances(parties,invoices,transactions){
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }
 export function invoiceDraftFromRecord(saved){
-  return {...blankInvoice(),partyId:saved.partyId,type:saved.type,invoiceDate:saved.invoiceDate,notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2)}))};
+  return {...blankInvoice(),partyId:saved.partyId,type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2)}))};
 }
+
+
+export const noteValueSign = note => note.type === 'credit' ? -1 : 1;
+export const notePartyDelta = note => noteValueSign(note) * Number(note.amountMinor) * (note.invoiceType === 'sale' ? 1 : -1);
+export function makeInvoiceNote(form, invoice, id = crypto.randomUUID()) {
+  if(!invoice || invoice.status!=='issued' || !['credit','debit'].includes(form.type) || !['price','return'].includes(form.effect))throw new Error('Choose an issued invoice and correction type.');
+  if(!validDate(form.noteDate) || form.noteDate<invoice.invoiceDate)throw new Error('A correction note cannot predate its invoice.');
+  const reason=String(form.reason||'').trim();
+  if(!reason || reason.length>1000)throw new Error('Enter a reason for this correction (up to 1000 characters).');
+  const amountMinor=minor(form.amount,'correction amount');
+  if(!amountMinor)throw new Error('Correction amount must be positive.');
+  const costAdjustmentMinor=invoice.type==='purchase'||form.effect==='price'?0:form.cost===''?null:minor(form.cost,'cost correction');
+  return {id,schemaVersion:1,invoiceId:invoice.id,type:form.type,noteDate:form.noteDate,reason,effect:form.effect,amountMinor,costAdjustmentMinor,currency:'INR',_expectedRevision:Number(invoice.revision||0)};
+}
+export function invoiceNetValue(invoice, notes = []) {
+  return Number(invoice.totalMinor)+notes.filter(note=>note.invoiceId===invoice.id&&note.status==='issued').reduce((sum,note)=>sum+noteValueSign(note)*Number(note.amountMinor),0);
+}
+export function historyNotes(notes, start, end, category='', query='') {
+  const search=query.trim().toLowerCase();
+  return notes.filter(note=>note.status!=='deleted'&&note.noteDate>=start&&note.noteDate<=end&&(!category||category===(note.invoiceType==='sale'?'Sale':'Purchase'))&&(!search||[note.noteNumber,note.invoiceNumber,note.partyName,note.reason].join(' ').toLowerCase().includes(search)))
+    .sort((a,b)=>b.noteDate.localeCompare(a.noteDate)||String(b.createdAt||'').localeCompare(String(a.createdAt||''))||b.id.localeCompare(a.id));
+}
+
+export function invoiceNoteRevision(notes,invoiceId){return notes.filter(note=>note.invoiceId===invoiceId&&note.status!=='deleted').map(note=>note.id+':'+Number(note.revision||0)).sort().join('|');}
+
+export function invoiceNeedsCost(invoice){return invoice.type==='sale'&&['issued','pending'].includes(invoice.status)&&(invoice.costTotalMinor==null||invoice.costTotalMinor==='');}
+export function blankNoteForm(type='credit'){return {type,invoiceId:'',effect:'price',noteDate:localNow().slice(0,10),amount:'',cost:'',reason:''};}
+export function noteDraftFromRecord(note){return {type:note.type,invoiceId:note.invoiceId,effect:note.effect,noteDate:note.noteDate,amount:(Number(note.amountMinor)/100).toFixed(2),cost:note.costAdjustmentMinor==null||note.costAdjustmentMinor===''?'':(Number(note.costAdjustmentMinor)/100).toFixed(2),reason:note.reason};}

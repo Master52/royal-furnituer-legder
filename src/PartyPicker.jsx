@@ -1,7 +1,7 @@
 import React, { useId, useMemo, useState } from 'react';
 import { findParties } from './accounts.js';
 
-export default function PartyPicker({ parties, value, selectedId, onChange, onSelect, onCreate }) {
+export default function PartyPicker({ parties, value, selectedId, onChange, onSelect, onCreate, disabled = false }) {
   const id=useId(), listId=`${id}-options`;
   const [open,setOpen]=useState(false);
   const [active,setActive]=useState(0);
@@ -19,7 +19,7 @@ export default function PartyPicker({ parties, value, selectedId, onChange, onSe
   }
   return <div className="invoice-party-picker" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))setOpen(false);}}>
     <label htmlFor={id}>Party <kbd>Alt + Q</kbd></label>
-    <input id={id} name="invoice-party" role="combobox" aria-autocomplete="list" aria-controls={expanded?listId:undefined} aria-expanded={expanded} aria-activedescendant={expanded?`${id}-${index}`:undefined}
+    <input id={id} disabled={disabled} name="invoice-party" role="combobox" aria-autocomplete="list" aria-controls={expanded?listId:undefined} aria-expanded={expanded} aria-activedescendant={expanded?`${id}-${index}`:undefined}
       autoComplete="off" required placeholder="Start typing a party name or phone" value={value}
       onFocus={()=>setOpen(Boolean(value.trim())&&!selectedId)} onChange={event=>{onChange(event.target.value);setOpen(Boolean(event.target.value.trim()));setActive(0);}} onKeyDown={keyDown}/>
     {expanded&&<div id={listId} role="listbox" className="invoice-party-options">

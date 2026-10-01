@@ -2,7 +2,7 @@ import { blankInvoice, blankItem } from './accounts.js';
 
 export const invoiceDraftKey=endpoint=>`rf.invoiceDraft.${endpoint}`;
 export function hasInvoiceDraft(draft){
-  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.type==='purchase'||draft.items.some(item=>item.description.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0));
+  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.items.some(item=>item.description.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0));
 }
 export function readInvoiceDraft(storage,endpoint){
   const key=invoiceDraftKey(endpoint);
@@ -13,7 +13,7 @@ export function readInvoiceDraft(storage,endpoint){
     const saved=JSON.parse(raw);
     if(!saved||typeof saved!=='object'||!Array.isArray(saved.items)||saved.items.length<1||saved.items.length>50)throw new Error('Invalid draft');
     const draft=blankInvoice();
-    for(const field of ['partyId','partyQuery','type','invoiceDate','notes']){
+    for(const field of ['partyId','partyQuery','type','invoiceDate','challanNumber','notes']){
       if(saved[field]!=null&&typeof saved[field]!=='string')throw new Error('Invalid draft field');
       if(saved[field]!=null)draft[field]=saved[field];
     }

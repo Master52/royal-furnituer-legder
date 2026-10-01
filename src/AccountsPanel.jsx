@@ -1,24 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { localNow, money, periodRange } from './ledger.js';
-import { blankInvoice, blankItem, makeInvoice, makeParty, partyStatement, invoiceSummary, invoiceDraftFromRecord } from './accounts.js';
+import { blankInvoice, blankItem, makeInvoice, makeParty, partyStatement, invoiceDraftFromRecord, historyInvoices, invoiceNetValue, invoiceNoteRevision, invoiceNeedsCost, blankNoteForm } from './accounts.js';
 import PartyStatement from './PartyStatement.jsx';
 import { createPortal } from 'react-dom';
 import AccountDialog from './AccountDialog.jsx';
 import InvoiceDocument from './InvoiceDocument.jsx';
 import PartyPicker from './PartyPicker.jsx';
+import InvoiceNotes, {NotesRegister,NoteEditor} from './InvoiceNotes.jsx';
 import { hasInvoiceDraft, invoiceDraftKey, readInvoiceDraft } from './invoiceDraft.js';
 
+import DocumentTypeSelector from './DocumentTypeSelector.jsx';
+import RecordMenu from './RecordMenu.jsx';
+import {focusAndCenter} from './entry.js';
+
+export function InvoiceCostBadge({invoice}){return invoiceNeedsCost(invoice)?<small className="profit-pending">Profit pending · CP missing</small>:null;}
 const newParty = () => ({name:'',phone:'',address:'',openingDate:localNow().slice(0,10),openingBalance:'0',openingDirection:'receivable'});
-export function InvoiceDashboard({ accounts, range, onOpenInvoice }) {
-  const [showProfit,setShowProfit]=useState(false);
-  if (!accounts.loaded) return null;
-  const summary=invoiceSummary(accounts.invoices,...range);
-  const receivable=accounts.partyBalances.reduce((sum,row)=>sum+Math.max(0,row.balance||0),0);
-  const payable=accounts.partyBalances.reduce((sum,row)=>sum-Math.min(0,row.balance||0),0);
-  const balanceError=accounts.partyBalances.some(row=>row.balance===null)?'A party has invalid linked payments.':'';
-  return <section className="invoice-dashboard"><div className="section-title"><h2>Invoices & party balances</h2><button className="outline" disabled={accounts.busy} onClick={accounts.reload}>Refresh invoices</button></div>{accounts.error && <p className="error">Invoice figures may be stale: {accounts.error}</p>}<div className="account-metrics">{[['Invoiced sales',summary.sales],['Invoiced purchases',summary.purchases],['Gross profit · costed sales',summary.grossProfit]].map(([label,value])=><article key={label}><span>{label}</span><strong>{label.startsWith('Gross profit')&&!showProfit?'••••':money(value)}</strong>{label.startsWith('Gross profit')&&<button type="button" className="profit-eye" aria-label={showProfit?'Hide gross profit':'Show gross profit'} aria-pressed={showProfit} onClick={()=>setShowProfit(!showProfit)}>{showProfit?'◉ Hide':'◎ Show'}</button>}<small>Selected date period · issued invoices</small></article>)}<article><span>Party receivables</span><strong>{balanceError?'Unavailable':money(receivable)}</strong><small>All recorded dates · net balance per party</small></article><article><span>Party payables</span><strong>{balanceError?'Unavailable':money(payable)}</strong><small>All recorded dates · net balance per party</small></article></div><details className="invoice-dashboard-list"><summary>Invoices ({accounts.invoices.length+accounts.pendingInvoices.length})</summary><div>{[...accounts.invoices,...accounts.pendingInvoices].sort((a,b)=>b.invoiceDate.localeCompare(a.invoiceDate)).map(inv=><button type="button" key={inv.id} onClick={()=>onOpenInvoice(inv.id)}><span><strong>{inv.invoiceNumber}</strong><small>{inv.partyName} · {inv.invoiceDate} · {inv.type==='sale'?'Sale':'Purchase'} · {inv.status}</small></span><strong>{money(inv.totalMinor)}</strong></button>)}{!accounts.invoices.length&&!accounts.pendingInvoices.length&&<p>No invoices yet.</p>}</div></details><p className="help">Confirmed Sheet snapshot: {accounts.checkedAt?new Date(accounts.checkedAt).toLocaleString():'Not refreshed'}. {summary.missingCosts?`${summary.missingCosts} sales invoice(s) have missing costs and are excluded from gross profit. `:''}Gross profit excludes operating expenses. Invoice totals and payment totals are separate; do not add them together. {balanceError}</p></section>;
-}
-export default function AccountsPanel({ accounts, endpoint, enabled, preferences, onPayment, paymentPending, invoiceCreateRequest = 0, invoiceResumeRequest = 0, onDraftChange, invoiceOpenRequest = null, onNavigateParties, onNavigateDashboard }) {
+export default function AccountsPanel({ challanEnabled=false, noteChangesEnabled=false, deletionEnabled=false, noteOpenRequest=null, notesEnabled=false, accounts, endpoint, enabled, preferences, onPayment, paymentPending, invoiceEditingEnabled = false, invoiceCreateRequest = 0, invoiceResumeRequest = 0, onDraftChange, invoiceOpenRequest = null, onNavigateParties, onNavigateDashboard }) {
   const [selected,setSelected]=useState('');
   const [balanceTab,setBalanceTab]=useState('receive');
   const [partySearch,setPartySearch]=useState('');
@@ -28,7 +25,14 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
   const [showParty,setShowParty]=useState(false);
   const [initialDraft]=useState(()=>readInvoiceDraft(localStorage,endpoint));
   const [invoice,setInvoice]=useState(initialDraft.draft);
+  const [documentKind,setDocumentKind]=useState('invoice');
+  const [createNoteForm,setCreateNoteForm]=useState(blankNoteForm);
+  const [requestedInvoiceAction,setRequestedInvoiceAction]=useState('');
+  const [noteAction,setNoteAction]=useState('');
   const [showInvoiceForm,setShowInvoiceForm]=useState(false);
+  const [editingInvoice,setEditingInvoice]=useState(null);
+  const [invoiceSaving,setInvoiceSaving]=useState(false);
+  const createDraftBeforeEdit=useRef(null);
   const [partyQuery,setPartyQuery]=useState(initialDraft.draft.partyQuery||'');
   const issuing=useRef(false);
   const savingParty=useRef(false);
@@ -40,6 +44,12 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
   const [showPrint,setShowPrint]=useState(false);
   const [preparingPrint,setPreparingPrint]=useState(false);
   const [invoiceDetailId,setInvoiceDetailId]=useState('');
+  const [detailLoading,setDetailLoading]=useState(false),[detailError,setDetailError]=useState('');
+  const [noteInvoiceId,setNoteInvoiceId]=useState('');
+  const [noteDetailId,setNoteDetailId]=useState('');
+  const [noteDraft,setNoteDraft]=useState(null);
+  const noteRequestSeen=useRef(noteOpenRequest);
+  useEffect(()=>{if(noteOpenRequest!==noteRequestSeen.current){noteRequestSeen.current=noteOpenRequest;if(noteOpenRequest?.id){setInvoiceDetailId('');setShowInvoiceForm(false);setNoteInvoiceId('');setNoteDetailId(noteOpenRequest.id);setNoteAction(noteOpenRequest.action||'');}}},[noteOpenRequest]);
   const [invoicePrintSnapshot,setInvoicePrintSnapshot]=useState(null);
   const activeParty=useRef('');
   activeParty.current=selected;
@@ -49,19 +59,31 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
   // This panel remounts when the Sheet endpoint changes. Old navigation requests
   // must not open an invoice or replace the newly connected Sheet's saved draft.
   const createRequestSeen=useRef(invoiceCreateRequest),resumeRequestSeen=useRef(invoiceResumeRequest),openRequestSeen=useRef(invoiceOpenRequest);
-  useEffect(()=>{if(invoiceCreateRequest!==createRequestSeen.current){createRequestSeen.current=invoiceCreateRequest;issuing.current=false;setInvoice(blankInvoice());setPartyQuery('');setInvoiceDetailId('');setShowParty(false);setReturnToInvoice(false);setCorrectPartyId('');setShowInvoiceForm(true);setShowDraftProfit(false);setError('');setNotice('');}},[invoiceCreateRequest]);
-  useEffect(()=>{if(invoiceOpenRequest!==openRequestSeen.current){openRequestSeen.current=invoiceOpenRequest;if(invoiceOpenRequest?.id){setShowInvoiceForm(false);setInvoiceDetailId(invoiceOpenRequest.id);setError('');}}},[invoiceOpenRequest]);
-  useEffect(()=>{if(invoiceResumeRequest!==resumeRequestSeen.current){resumeRequestSeen.current=invoiceResumeRequest;if(!hasInvoiceDraft({...invoice,partyQuery}))return;issuing.current=false;setInvoiceDetailId('');setShowParty(false);setReturnToInvoice(false);setShowInvoiceForm(true);setShowDraftProfit(false);setError('');setNotice('');}},[invoiceResumeRequest]);
-  useEffect(()=>{onDraftChange?.(hasInvoiceDraft({...invoice,partyQuery}));},[invoice,partyQuery,onDraftChange]);
-  useEffect(()=>{if(!showInvoiceForm)return;const timer=setTimeout(()=>document.querySelector('.account-invoice-dialog input[name=invoice-party]')?.focus(),0);return()=>clearTimeout(timer);},[showInvoiceForm]);
+  useEffect(()=>{if(invoiceCreateRequest!==createRequestSeen.current){createRequestSeen.current=invoiceCreateRequest;issuing.current=false;setDocumentKind('invoice');setCreateNoteForm(blankNoteForm());setInvoice(blankInvoice());setPartyQuery('');setInvoiceDetailId('');setShowParty(false);setReturnToInvoice(false);setCorrectPartyId('');setShowInvoiceForm(true);setShowDraftProfit(false);setError('');setNotice('');}},[invoiceCreateRequest]);
+  useEffect(()=>{if(invoiceOpenRequest!==openRequestSeen.current){openRequestSeen.current=invoiceOpenRequest;if(invoiceOpenRequest?.id){setShowInvoiceForm(false);setInvoiceDetailId(invoiceOpenRequest.id);setRequestedInvoiceAction(invoiceOpenRequest.action||'');setError('');}}},[invoiceOpenRequest]);
+  useEffect(()=>{if(invoiceResumeRequest!==resumeRequestSeen.current){resumeRequestSeen.current=invoiceResumeRequest;if(!hasInvoiceDraft({...invoice,partyQuery}))return;setDocumentKind('invoice');issuing.current=false;setInvoiceDetailId('');setShowParty(false);setReturnToInvoice(false);setShowInvoiceForm(true);setShowDraftProfit(false);setError('');setNotice('');}},[invoiceResumeRequest]);
+  useEffect(()=>{onDraftChange?.(hasInvoiceDraft(editingInvoice?createDraftBeforeEdit.current?.invoice||blankInvoice():{...invoice,partyQuery}));},[invoice,partyQuery,editingInvoice,onDraftChange]);
+  useEffect(()=>{if(!showInvoiceForm)return;const timer=setTimeout(()=>document.querySelector(editingInvoice?'.account-invoice-dialog input[aria-label="Item 1 description"]':'.account-invoice-dialog input[name=invoice-party]')?.focus(),0);return()=>clearTimeout(timer);},[showInvoiceForm,editingInvoice]);
   useEffect(()=>{if(invoice.partyId){const match=accounts.selectableParties.find(item=>item.id===invoice.partyId);if(match)setPartyQuery(match.name);}},[invoice.partyId,accounts.selectableParties]);
   const [printing,setPrinting]=useState(false);
   const [printSnapshot,setPrintSnapshot]=useState(null);
   const party=accounts.parties.find(p=>p.id===selected);
   const invoiceDetail=accounts.invoices.find(inv=>inv.id===invoiceDetailId)||accounts.pendingInvoices.find(inv=>inv.id===invoiceDetailId);
+  useEffect(()=>{
+    if(!invoiceDetail||Array.isArray(invoiceDetail.items)){setDetailLoading(false);setDetailError('');return;}
+    let cancelled=false;setDetailLoading(true);setDetailError('');
+    accounts.loadInvoiceDetails([invoiceDetail.id]).catch(error=>{if(!cancelled)setDetailError(error.message);}).finally(()=>{if(!cancelled)setDetailLoading(false);});
+    return()=>{cancelled=true;};
+  },[invoiceDetailId,invoiceDetail?.revision,Boolean(invoiceDetail?.items)]);
+  const invoiceEditProtected=accounts.notedInvoiceIds?.has(invoiceDetailId)||accounts.notes.some(note=>note.invoiceId===invoiceDetailId);
+  const invoiceHasNotes=accounts.notes.some(note=>note.invoiceId===invoiceDetailId);
+  const partyNotes=[...accounts.notes,...accounts.pendingNotes].filter(note=>note.partyId===selected);
+  const createNoteInvoice=accounts.invoices.find(record=>record.id===createNoteForm.invoiceId&&record.status==='issued'&&record.partyId===invoice.partyId);
+  const noteInvoice=accounts.invoices.find(invoice=>invoice.id===noteInvoiceId);
   const partyInvoices=[...accounts.invoices,...accounts.pendingInvoices].filter(inv=>inv.partyId===selected).sort((a,b)=>b.invoiceDate.localeCompare(a.invoiceDate)||String(b.createdAt).localeCompare(String(a.createdAt)));
   const blocked=accounts.busy || Boolean(accounts.pending) || !enabled || !accounts.loaded;
-  useEffect(()=>{try{localStorage.setItem(invoiceDraftKey(endpoint),JSON.stringify({...invoice,partyQuery}));}catch{setError('Invoice draft could not be saved on this browser. Keep this page open until it is issued.');}},[endpoint,invoice,partyQuery]);
+  useEffect(()=>{if(accounts.loaded&&selected&&!party&&!accounts.busy)setSelected('');},[accounts.loaded,selected,party,accounts.busy]);
+  useEffect(()=>{if(editingInvoice)return;try{localStorage.setItem(invoiceDraftKey(endpoint),JSON.stringify({...invoice,partyQuery}));}catch{setError('Invoice draft could not be saved on this browser. Keep this page open until it is issued.');}},[endpoint,invoice,partyQuery,editingInvoice]);
   useEffect(()=>{
     const handler=e=>{if(invoice.items.some(i=>i.description || i.rate) || showParty || accounts.pending){e.preventDefault();e.returnValue='';}};
     window.addEventListener('beforeunload',handler);return()=>window.removeEventListener('beforeunload',handler);
@@ -69,27 +91,55 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
   useEffect(()=>{const done=()=>{delete document.body.dataset.accountPrint;setPrinting(false);};window.addEventListener('afterprint',done);return()=>{window.removeEventListener('afterprint',done);delete document.body.dataset.accountPrint;};},[]);
   useEffect(()=>{if(!printing)return;document.body.dataset.accountPrint=printing;const timer=setTimeout(()=>window.print(),0);return()=>clearTimeout(timer);},[printing]);
   const update=(key,value)=>setInvoice(old=>({...old,[key]:value}));
-  function addInvoiceItem(){setInvoice(old=>({...old,items:[...old.items,blankItem()]}));setTimeout(()=>document.querySelector('.account-invoice-dialog .invoice-item-editor:last-of-type input')?.focus(),0);}
+  function addInvoiceItem(){setInvoice(old=>({...old,items:[...old.items,blankItem()]}));setTimeout(()=>focusAndCenter(document.querySelector('.account-invoice-dialog .invoice-item-editor:last-of-type input')),0);}
   useEffect(()=>{
     if(!showInvoiceForm)return;
     const handler=event=>{
-      if(!document.querySelector('dialog.account-invoice-dialog[open]') || document.querySelector('dialog.account-invoice-dialog fieldset:disabled') || event.repeat || event.isComposing || event.getModifierState?.('AltGraph'))return;
+      if(!document.querySelector('dialog.account-invoice-dialog[open]') || document.querySelector('dialog.account-invoice-dialog .invoice-form > fieldset:disabled') || event.repeat || event.isComposing || event.getModifierState?.('AltGraph'))return;
       const key=event.key.toLowerCase();
-      if((event.ctrlKey||event.metaKey) && !event.altKey && !event.shiftKey && key==='enter'){event.preventDefault();document.querySelector('.account-invoice-dialog form')?.requestSubmit();return;}
+      if(documentKind==='invoice'&&(event.ctrlKey||event.metaKey) && !event.altKey && !event.shiftKey && key==='enter'){event.preventDefault();document.querySelector('.account-invoice-dialog form')?.requestSubmit();return;}
       if(!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)return;
-      if(key==='a' && invoice.items.length<50 && accounts.canQueue){event.preventDefault();addInvoiceItem();}
-      else if(key==='1' || key==='2'){event.preventDefault();update('type',key==='1'?'sale':'purchase');}
-      else if(key==='q'){event.preventDefault();document.querySelector('.account-invoice-dialog input[name=invoice-party]')?.focus();}
+      if(['1','2','3','4'].includes(key)&&!editingInvoice){event.preventDefault();changeDocumentType({1:'sale',2:'purchase',3:'credit',4:'debit'}[key]);focusAndCenter(document.querySelector('.account-invoice-dialog [data-document-type]'));return;}
+      if(documentKind!=='invoice')return;
+      if(key==='a' && invoice.items.length<50 && accounts.canQueue){event.preventDefault();addInvoiceItem();return;}
+      if(key==='g'&&invoice.type==='sale'){event.preventDefault();setShowDraftProfit(old=>!old);focusAndCenter(document.querySelector('.account-invoice-dialog .draft-profit button'));return;}
+      const root=document.querySelector('.account-invoice-dialog'),item=document.activeElement?.closest('.invoice-item-editor')||root?.querySelector('.invoice-item-editor');
+      const selector={q:'input[name=invoice-party]',d:'input[type=date]',v:'textarea',t:'[data-document-type]',h:'[data-invoice-field=challan]'}[key];
+      const field={j:'description',u:'quantity',r:'rate',c:'cost',x:'discount'}[key];
+      const target=selector?root?.querySelector(selector):field?item?.querySelector(`[data-invoice-field="${field}"]`):null;
+      if(target){event.preventDefault();focusAndCenter(target);}
     };
     window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
-  },[showInvoiceForm,invoice.items.length,accounts.canQueue]);
+  },[showInvoiceForm,invoice.items.length,accounts.canQueue,editingInvoice,documentKind,invoice.type]);
+  function changeDocumentType(value){
+    if(value==='sale'||value==='purchase'){setDocumentKind('invoice');update('type',value);}
+    else {setDocumentKind(value);setCreateNoteForm(old=>({...old,type:value}));}
+  }
+  useEffect(()=>{if(!requestedInvoiceAction||!invoiceDetail||blocked||!Array.isArray(invoiceDetail.items))return;const action=requestedInvoiceAction;setRequestedInvoiceAction('');if(action==='edit')editInvoice();else if(action==='delete')deleteInvoice(invoiceDetail);else if(action==='print')printInvoice();},[requestedInvoiceAction,invoiceDetail,blocked]);
+  function editInvoice(){
+    if(blocked||!invoiceEditingEnabled||invoiceEditProtected||invoiceDetail?.status!=='issued'||!Array.isArray(invoiceDetail?.items))return;
+    createDraftBeforeEdit.current={invoice:{...invoice,partyQuery},partyQuery};
+    setDocumentKind('invoice');setEditingInvoice(invoiceDetail);setInvoice(invoiceDraftFromRecord(invoiceDetail));setPartyQuery(invoiceDetail.partyName);setInvoiceDetailId('');setShowInvoiceForm(true);setShowDraftProfit(false);issuing.current=false;setError('');
+  }
+  function finishInvoiceEdit(){
+    const id=editingInvoice?.id,backup=createDraftBeforeEdit.current;
+    setInvoice(backup?.invoice||blankInvoice());setPartyQuery(backup?.partyQuery||'');createDraftBeforeEdit.current=null;setEditingInvoice(null);setShowInvoiceForm(false);setInvoiceDetailId(id||'');issuing.current=false;
+  }
+  function closeInvoiceForm(){
+    if(invoiceSaving)return;
+    if(documentKind!=='invoice'&&(createNoteForm.amount||createNoteForm.reason)&&!window.confirm('Close this unsaved correction note?'))return;
+    if(editingInvoice&&accounts.pending?.action==='updateInvoice'){finishInvoiceEdit();return;}
+    if(editingInvoice){if(JSON.stringify(invoice)!==JSON.stringify(invoiceDraftFromRecord(editingInvoice))&&!window.confirm('Discard these unsaved invoice changes?'))return;finishInvoiceEdit();}else setShowInvoiceForm(false);
+  }
+  async function retryInvoiceEdit(){if(await accounts.retry())finishInvoiceEdit();}
+  async function discardInvoiceEdit(){if(window.confirm('Discard this rejected invoice edit and review the latest invoice?')&&await accounts.discardRejected())finishInvoiceEdit();}
   function updateItem(index,key,value){setInvoice(old=>({...old,items:old.items.map((item,i)=>i===index?{...item,[key]:value}:item)}));}
-  function selectInvoiceParty(account){setInvoice(old=>({...old,partyId:account.id}));setPartyQuery(account.name);}
+  function selectInvoiceParty(account){setCreateNoteForm(old=>{const choices=accounts.invoices.filter(record=>record.partyId===account.id&&record.status==='issued');return {...old,invoiceId:choices.some(record=>record.id===old.invoiceId)?old.invoiceId:choices.length===1?choices[0].id:''};});setInvoice(old=>({...old,partyId:account.id}));setPartyQuery(account.name);}
   function createPartyFromInvoice(){setCorrectPartyId('');setReturnToInvoice(true);setShowInvoiceForm(false);setShowParty(true);setEditParty(null);setSelected('');setPartyForm({...newParty(),name:partyQuery.trim(),openingDate:invoice.invoiceDate});onNavigateParties();}
   function cancelPartyForm(){setShowParty(false);setCorrectPartyId('');setError('');if(returnToInvoice){setReturnToInvoice(false);setShowInvoiceForm(true);onNavigateDashboard();}}
   function createPartyInvoice(){
     if(!party || blocked)return;
-    issuing.current=false;setInvoice({...blankInvoice(),partyId:party.id});setPartyQuery(party.name);
+    issuing.current=false;setDocumentKind('invoice');setCreateNoteForm(blankNoteForm());setInvoice({...blankInvoice(),partyId:party.id});setPartyQuery(party.name);
     setShowInvoiceForm(true);setError('');setNotice('');
   }
   function payFromInvoice(){
@@ -105,7 +155,7 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
     try{
       const result=await accounts.reload({fresh:true});
       if(!result)return;
-      const freshInvoice=result.invoices.find(inv=>inv.id===id);
+      const [freshInvoice]=await accounts.loadInvoiceDetails([id],{fresh:true});
       if(!freshInvoice)throw new Error('Invoice no longer exists. Refresh the invoice list.');
       setInvoicePrintSnapshot(freshInvoice);setPrinting('invoice');
     }catch(e){setError(e.message);}
@@ -126,14 +176,21 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
   async function issue(e){
     e.preventDefault();if(issuing.current)return;issuing.current=true;setError('');setNotice('');
     try{
-      const payload=makeInvoice(invoice);
+      const payload=makeInvoice(invoice,editingInvoice?.id);
+      if(payload.challanNumber&&!challanEnabled)throw new Error('Deploy Sheet backend 1.13.0 before saving a challan number.');
       const account=accounts.selectableParties.find(item=>item.id===payload.partyId);
       if(!account)throw new Error('Select an existing party or create a new party.');
       if(payload.invoiceDate<account.openingDate)throw new Error('Invoice date cannot predate the party opening balance date.');
       Object.assign(payload,{partyName:account.name,partyPhone:account.phone,partyAddress:account.address});
-      if(!window.confirm(`Issue ${invoice.type} invoice for ${money(payload.totalMinor)}? Its RF number will be assigned by Google Sheets. It will affect the party balance. Issued invoices cannot be edited; cancel and replace if needed.`)){issuing.current=false;return;}
+      if(editingInvoice){
+        if(!window.confirm(`Save changes to ${editingInvoice.invoiceNumber} for ${money(payload.totalMinor)}? The party balance and invoice totals will update. Payments stay unchanged.`)){issuing.current=false;return;}
+        Object.assign(payload,{invoiceNumber:editingInvoice.invoiceNumber,_editId:crypto.randomUUID(),_expectedRevision:Number(editingInvoice.revision||0)});setInvoiceSaving(true);
+        if(await accounts.save('updateInvoice',payload)){finishInvoiceEdit();setNotice('Invoice updated.');}else issuing.current=false;
+        return;
+      }
+      if(!window.confirm(`Issue ${invoice.type} invoice for ${money(payload.totalMinor)}? Its RF number will be assigned by Google Sheets. It will affect the party balance.`)){issuing.current=false;return;}
       if(await accounts.queueInvoice(payload)){setInvoice(blankInvoice());setPartyQuery('');setShowInvoiceForm(false);setInvoiceDetailId(payload.id);setNotice('Invoice saved on this device. Uploading to Google Sheets in the background.');}else issuing.current=false;
-    }catch(e){issuing.current=false;setError(e.message);}
+    }catch(e){issuing.current=false;setError(e.message);}finally{setInvoiceSaving(false);}
   }
   async function retry(){if(await accounts.retry())setNotice('Saved request confirmed by Google Sheets.');}
   async function discardRejectedRequest(){
@@ -148,24 +205,35 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
       catch{setError('Could not restore the invoice draft. The saved upload request is still kept on this device.');return;}
     }
     if(await accounts.discardRejected()){
+      if(operation?.action==='createInvoiceNote'){setNoteAction('');setNoteDraft(operation.payload);setNoteInvoiceId(operation.payload.invoiceId);setNoteDetailId('');setInvoiceDetailId('');}
       if(restored){issuing.current=false;setInvoiceDetailId('');setShowInvoiceForm(true);setShowDraftProfit(false);onNavigateDashboard();}
     }
   }
-  async function cancel(inv){
-    const reason=window.prompt(`Cancel invoice ${inv.invoiceNumber}? Payments stay unchanged. Enter the reason:`);
+  async function deleteInvoice(inv){
+    setError('');
+    const attached=accounts.notes.filter(note=>note.invoiceId===inv.id);
+    const reason=window.prompt(`Delete invoice ${inv.invoiceNumber}${attached.length?' and its '+attached.length+' correction note(s)':''} from the active ledger? Payments stay unchanged. Sheet rows are retained for recovery. Enter a reason:`);
     if(!reason?.trim())return;
-    if(await accounts.save('cancelInvoice',{id:inv.id,reason:reason.trim()}))setNotice('Invoice cancelled; party balance updated. Payments are unchanged.');
+    if(await accounts.save('deleteInvoice',{id:inv.id,reason:reason.trim(),_expectedRevision:Number(inv.revision||0),_expectedNotes:invoiceNoteRevision(accounts.notes,inv.id)})){setInvoiceDetailId(current=>current===inv.id?'':current);setNotice('Invoice deleted from the active ledger. Payments stay unchanged.');}
+  }
+  async function deleteParty(){
+    if(!party||blocked||paymentPending)return;
+    setError('');
+    if(Number(party.openingBalanceMinor)!==0){setError('This party has an opening balance and cannot be deleted.');return;}
+    if(accounts.invoices.some(invoice=>invoice.partyId===party.id&&invoice.status==='issued')||accounts.transactions.some(payment=>payment.partyId===party.id&&!payment.deletedAt)){setError('This party has active invoices or payments. Delete those records first.');return;}
+    if(!window.confirm(`Delete party ${party.name}? Parties with an opening balance, active invoices or payments cannot be deleted. The saved Sheet record is retained.`))return;
+    if(await accounts.save('deleteParty',{id:party.id,_expectedRevision:Number(party.revision||0)})){setSelected(current=>current===party.id?'':current);setShowParty(false);setNotice('Party deleted. Its Sheet record is retained for recovery.');}
   }
   const partyBalances=accounts.partyBalances;
   const currentBalance=partyBalances.find(row=>row.party.id===selected)?.balance??null;
   const {statement,statementError}=useMemo(()=>{
     if(!party)return {statement:null,statementError:''};
-    try{if(!range[0]||!range[1]||range[0]>range[1])throw new Error('Choose a valid statement date range.');return {statement:partyStatement(party,accounts.invoices,accounts.transactions,...range),statementError:''};}
+    try{if(!range[0]||!range[1]||range[0]>range[1])throw new Error('Choose a valid statement date range.');return {statement:partyStatement(party,accounts.invoices,accounts.transactions,...range,accounts.notes),statementError:''};}
     catch(error){return {statement:null,statementError:error.message};}
-  },[party,accounts.invoices,accounts.transactions,range]);
+  },[party,accounts.invoices,accounts.transactions,accounts.notes,range]);
   const searchTerm=partySearch.trim().normalize('NFKC').toLocaleLowerCase();
   const visibleParties=partyBalances
-    .filter(row=>searchTerm?[row.party.name,row.party.phone].some(value=>String(value||'').normalize('NFKC').toLocaleLowerCase().includes(searchTerm)):row.balance!==null && (balanceTab==='receive'?row.balance>0:row.balance<0))
+    .filter(row=>searchTerm?[row.party.name,row.party.phone].some(value=>String(value||'').normalize('NFKC').toLocaleLowerCase().includes(searchTerm)):balanceTab==='all'||row.balance!==null && (balanceTab==='receive'?row.balance>0:row.balance<0))
     .sort((a,b)=>Math.abs(b.balance||0)-Math.abs(a.balance||0)||a.party.name.localeCompare(b.party.name));
   const unavailableBalances=partyBalances.filter(row=>row.balance===null);
   const receiveTotal=partyBalances.reduce((sum,row)=>sum+(row.balance>0?row.balance:0),0);
@@ -183,13 +251,17 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
       if(!result || activeParty.current!==partyId)return;
       const freshParty=result.parties.find(p=>p.id===partyId);
       if(!freshParty)throw new Error('Party no longer exists.');
-      const freshStatement=partyStatement(freshParty,result.invoices,result.transactions,...printRange);
+      let invoices=result.invoices;
+      if(printDetailed){const ids=invoices.filter(invoice=>invoice.partyId===partyId&&invoice.status==='issued'&&invoice.invoiceDate>=printRange[0]&&invoice.invoiceDate<=printRange[1]).map(invoice=>invoice.id);const details=ids.length?await accounts.loadInvoiceDetails(ids,{fresh:true}):[];const expected=new Map(invoices.map(invoice=>[invoice.id,invoice]));if(details.some(invoice=>Number(invoice.revision||0)!==Number(expected.get(invoice.id)?.revision||0)||invoice.status!==expected.get(invoice.id)?.status))throw new Error('An invoice changed while preparing the statement. Prepare it again.');const map=new Map(details.map(invoice=>[invoice.id,invoice]));invoices=invoices.map(invoice=>map.get(invoice.id)||invoice);}
+      const freshStatement=partyStatement(freshParty,invoices,result.transactions,...printRange,result.notes||[]);
       setPrintSnapshot({party:freshParty,statement:freshStatement,range:printRange,detailed:printDetailed,checkedAt:new Date().toISOString()});setPrinting('statement');
     }catch(e){setError(e.message);}
     finally{setPreparingPrint(false);}
   }
   if(!endpoint)return <section className="accounts-panel"><p>Connect the test Google Sheet in Settings to start.</p></section>;
   if(!enabled)return <section className="accounts-panel"><h2>Update the test Sheet backend</h2><p>Parties and invoices need Code.gs 1.8.0. Download it in Settings → Google Sheets setup, paste it into the copied TEST Sheet’s Apps Script, run setup, and deploy a new version. Then test the connection again.</p><p>Existing payments continue to work with the old backend.</p></section>;
+  const documentHeader=<><DocumentTypeSelector value={documentKind==='invoice'?invoice.type:documentKind} disabled={Boolean(editingInvoice)} onChange={changeDocumentType}/>{documentKind==='invoice'?<div className="account-fields invoice-header-fields"><PartyPicker disabled={Boolean(editingInvoice)} parties={accounts.selectableParties} value={partyQuery} selectedId={invoice.partyId} onChange={value=>{setPartyQuery(value);update('partyId','');}} onSelect={selectInvoiceParty} onCreate={createPartyFromInvoice}/><label>Invoice date<input type="date" required min={accounts.selectableParties.find(p=>p.id===invoice.partyId)?.openingDate} value={invoice.invoiceDate} onChange={e=>update('invoiceDate',e.target.value)}/></label><label>Challan No.<input data-invoice-field="challan" maxLength="80" disabled={!challanEnabled} title={challanEnabled?undefined:'Update Sheet backend to 1.13.0 to save challan numbers'} placeholder={challanEnabled?'Optional':'Requires backend 1.13.0'} value={invoice.challanNumber||''} onChange={e=>update('challanNumber',e.target.value)}/></label></div>:<div className="account-fields note-header-fields"><label>Original invoice<select data-note-field="invoice" required value={createNoteForm.invoiceId} onChange={e=>{const record=accounts.invoices.find(item=>item.id===e.target.value);setCreateNoteForm(old=>({...old,invoiceId:e.target.value}));update('partyId',record?.partyId||'');setPartyQuery(record?.partyName||'');}}><option value="">Select invoice…</option>{accounts.invoices.filter(record=>record.status==='issued').map(record=><option key={record.id} value={record.id}>{record.invoiceNumber} · {record.partyName} · {record.type==='sale'?'Sale':'Purchase'} · {money(record.totalMinor)}</option>)}</select></label><label>Party<input name="invoice-party" readOnly value={createNoteInvoice?.partyName||''} placeholder="Filled from the original invoice"/></label></div>}</>;
+
   return <section className="accounts-panel">
     <div className="accounts-controls parties-page-heading"><h1>{party?'Party details':'Parties'}</h1>{accounts.error&&<button className="outline" disabled={accounts.busy} onClick={accounts.reload}>{accounts.error?'Retry refresh':'Refresh from Sheets'}</button>}{!party&&<button className="primary" disabled={blocked} onClick={()=>{setError('');setEditParty(null);setPartyForm(newParty());setShowParty(true);}}>＋ Add Party</button>}</div>
 
@@ -201,30 +273,31 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
     {!party&&<section className="party-directory">
       <div className="party-directory-search"><label htmlFor="party-directory-query">Search all parties</label><div><input id="party-directory-query" type="search" value={partySearch} placeholder="Name or phone, including settled parties" onChange={event=>setPartySearch(event.target.value)}/>{partySearch&&<button type="button" className="outline" onClick={()=>setPartySearch('')}>Clear search</button>}</div>{searchTerm&&<p className="help">Search includes parties who owe, parties we owe, and settled accounts.</p>}</div>
       <div className="party-balance-tabs" role="group" aria-label="Party balance filter">
+        <button type="button" aria-pressed={!searchTerm&&balanceTab==='all'} onClick={()=>{setBalanceTab('all');setPartySearch('');}}><span>All Parties</span><strong>{accounts.loaded?`${accounts.parties.length} ${accounts.parties.length===1?'party':'parties'}`:'—'}</strong></button>
         <button type="button" aria-pressed={!searchTerm&&balanceTab==='receive'} onClick={()=>{setBalanceTab('receive');setPartySearch('');}}><span>To Receive</span><strong>{totalLabel(receiveTotal)}</strong></button>
         <button type="button" aria-pressed={!searchTerm&&balanceTab==='pay'} onClick={()=>{setBalanceTab('pay');setPartySearch('');}}><span>To Pay</span><strong>{totalLabel(payTotal)}</strong></button>
       </div>
       {unavailableBalances.length>0&&<p className="error">Balances unavailable for {unavailableBalances.map(row=>row.party.name).join(', ')}. Correct their linked payments before using these totals.</p>}
       <div className="party-list-columns" aria-hidden="true"><span>Party name</span><span>Contact number</span><span>Amount</span></div>
-      <ul className="party-balance-list">{visibleParties.map(({party:account,balance})=><li key={account.id}><button type="button" className="party-balance-row" onClick={()=>setSelected(account.id)}><strong>{account.name}</strong><span className="party-phone">{account.phone||'No contact number'}</span><span className={`party-amount ${balance<0?'pay':'receive'}`}>{balance===null?'Unavailable':money(Math.abs(balance))}{searchTerm&&<small>{balance===null?'Check payments':balance>0?'To Receive':balance<0?'To Pay':'Settled'}</small>}<span aria-hidden="true"> ›</span></span></button></li>)}</ul>
-      {accounts.loaded&&!visibleParties.length&&<div className="party-list-empty">{searchTerm?'No parties match this search.':accounts.parties.length?balanceTab==='receive'?'No amounts to receive.':'No amounts to pay.':'No parties yet. Add a party to get started.'}</div>}
+      <ul className="party-balance-list">{visibleParties.map(({party:account,balance})=><li key={account.id}><button type="button" className="party-balance-row" onClick={()=>setSelected(account.id)}><strong>{account.name}</strong><span className="party-phone">{account.phone||'No contact number'}</span><span className={`party-amount ${balance<0?'pay':'receive'}`}>{balance===null?'Unavailable':money(Math.abs(balance))}{(searchTerm||balanceTab==='all')&&<small>{balance===null?'Check payments':balance>0?'To Receive':balance<0?'To Pay':'Settled'}</small>}<span aria-hidden="true"> ›</span></span></button></li>)}</ul>
+      {accounts.loaded&&!visibleParties.length&&<div className="party-list-empty">{searchTerm?'No parties match this search.':!accounts.parties.length||balanceTab==='all'?'No parties yet. Add a party to get started.':balanceTab==='receive'?'No amounts to receive.':'No amounts to pay.'}</div>}
     </section>}
     {party&&<button type="button" className="outline party-back" onClick={()=>{setSelected('');setShowParty(false);}}>← Back to parties</button>}
     {party&&<>
       <div className="party-overview">
         <div className="party-detail-heading"><div><h2>{party.name}</h2><dl className="party-contact-details"><div><dt>Contact number</dt><dd>{party.phone||'—'}</dd></div><div><dt>Address</dt><dd>{party.address||'—'}</dd></div></dl></div><div className="party-total"><span>Total balance</span><strong>{currentBalance===null?'Unavailable':money(Math.abs(currentBalance))}</strong><small>{currentBalance===null?'':currentBalance>0?'To Receive':currentBalance<0?'To Pay':'Settled'}</small></div></div>
-        <div className="accounts-controls"><button className="outline" disabled={blocked} onClick={()=>{setError('');setEditParty(party);setPartyForm({...newParty(),...party});setShowParty(true);}}>Edit contact details</button><button className="primary" disabled={blocked||paymentPending} onClick={()=>onPayment(party,'in')}>Receive payment</button><button className="outline" disabled={blocked||paymentPending} onClick={()=>onPayment(party,'out')}>Make payment</button><button type="button" className="outline" disabled={blocked} onClick={createPartyInvoice}>Create Invoice</button><button type="button" className="outline" aria-haspopup="dialog" onClick={()=>{setError('');setShowPrint(true);}} disabled={printing||preparingPrint}>Print Statement</button></div>
+        <div className="accounts-controls"><button className="outline" disabled={blocked} onClick={()=>{setError('');setEditParty(party);setPartyForm({...newParty(),...party});setShowParty(true);}}>Edit contact details</button><button className="primary" disabled={blocked||paymentPending} onClick={()=>onPayment(party,'in')}>Receive payment</button><button className="outline" disabled={blocked||paymentPending} onClick={()=>onPayment(party,'out')}>Make payment</button><button type="button" className="outline" disabled={blocked} onClick={createPartyInvoice}>Create Invoice</button><button type="button" className="outline" aria-haspopup="dialog" onClick={()=>{setError('');setShowPrint(true);}} disabled={printing||preparingPrint}>Print Statement</button><RecordMenu label={party.name} actions={[{label:'Delete Party',disabled:!deletionEnabled||blocked||paymentPending,onClick:deleteParty}]}/></div>{!deletionEnabled&&<p className="help">Invoice and party deletion require Sheet backend 1.11.0 or newer. Update the script and refresh.</p>}
       </div>
-      <section className="invoice-register party-invoices"><h3>Invoices</h3>{partyInvoices.map(inv=><article key={inv.id}><button type="button" className="invoice-open-row" aria-haspopup="dialog" onClick={()=>{setError('');setInvoiceDetailId(inv.id);}}><div><strong>{inv.invoiceNumber}</strong><small>{inv.invoiceDate} · {inv.type==='sale'?'Sales invoice':'Purchase invoice'}</small>{inv.cancelReason&&<small>Cancellation: {inv.cancelReason}</small>}</div><div className="party-invoice-amount"><strong>{money(inv.totalMinor)}</strong><small>{inv.status==='cancelled'?'Cancelled':inv._pending?'Pending upload':'Issued'}</small></div></button></article>)}{!partyInvoices.length&&<p>No invoices for this party yet.</p>}</section>
+      <section className="invoice-register party-invoices"><h3>Invoices</h3><p className="help">Click an invoice to open its details and create a credit/debit note.</p>{partyInvoices.map(inv=><article key={inv.id}><button type="button" className="invoice-open-row" aria-haspopup="dialog" onClick={()=>{setError('');setInvoiceDetailId(inv.id);}}><div><strong>{inv.invoiceNumber}</strong><small>{inv.invoiceDate} · {inv.type==='sale'?'Sales invoice':'Purchase invoice'}</small><InvoiceCostBadge invoice={inv}/>{inv.cancelReason&&<small>Cancellation: {inv.cancelReason}</small>}</div><div className="party-invoice-amount"><strong>{money(inv.totalMinor)}</strong><small>{inv.status==='cancelled'?'Cancelled':inv._pending?'Pending upload':'Issued'}</small></div></button></article>)}{!partyInvoices.length&&<p>No invoices for this party yet.</p>}</section>{partyNotes.length>0&&<NotesRegister notes={partyNotes} range={['0000-01-01','9999-12-31']} onOpenNote={id=>{setNoteAction('');setNoteDetailId(id);}}/>}
     </>}
-    {showInvoiceForm&&<AccountDialog className="account-invoice-dialog" title="Create Invoice" busy={false} onClose={()=>setShowInvoiceForm(false)}>
+    {showInvoiceForm&&<AccountDialog className="account-invoice-dialog" title={editingInvoice?`Edit invoice ${editingInvoice.invoiceNumber}`:"Create Invoice"} busy={invoiceSaving} onClose={closeInvoiceForm}>
       {(error||accounts.error)&&<p className="error" role="alert">{error||accounts.error}</p>}
-      {accounts.pending&&<p className="account-pending">Requests upload in the background. New invoices will wait for their party to finish saving.</p>}
-      <form className="account-form invoice-form" onSubmit={issue}><fieldset disabled={!accounts.canQueue}><div className="invoice-edit-content"><p className="help">Draft saved on this browser. Issuing an invoice changes the party balance; payment is recorded separately.</p><div className="account-fields"><label>Type <kbd>Alt + 1 / 2</kbd><select value={invoice.type} onChange={e=>update('type',e.target.value)}><option value="sale">Sales invoice</option><option value="purchase">Purchase invoice</option></select></label><PartyPicker parties={accounts.selectableParties} value={partyQuery} selectedId={invoice.partyId} onChange={value=>{setPartyQuery(value);update('partyId','');}} onSelect={selectInvoiceParty} onCreate={createPartyFromInvoice}/><div className="invoice-number-hint"><span>Invoice number</span><strong>{invoice.type==='sale'?'RF-S-…':'RF-P-…'}</strong><small>Assigned automatically when issued</small></div><label>Invoice date<input type="date" required min={accounts.selectableParties.find(p=>p.id===invoice.partyId)?.openingDate} value={invoice.invoiceDate} onChange={e=>update('invoiceDate',e.target.value)}/></label></div>
-    <div className="invoice-pos-layout"><div className="invoice-pos-items"><h3>Items</h3>{invoice.items.map((item,index)=><div className="invoice-item-editor" key={index}><label>Item {index+1}<input aria-label={`Item ${index+1} description`} required maxLength="300" value={item.description} onChange={e=>updateItem(index,'description',e.target.value)}/></label><label>Quantity<input type="number" min="0.001" max="1000000" step="0.001" required value={item.quantity} onChange={e=>updateItem(index,'quantity',e.target.value)}/></label><label>Rate (₹)<input type="number" min="0" step="0.01" required value={item.rate} onChange={e=>updateItem(index,'rate',e.target.value)}/></label><label>Line discount (₹)<input type="number" min="0" step="0.01" value={item.discount} onChange={e=>updateItem(index,'discount',e.target.value)}/></label>{invoice.type==='sale'&&<label>Internal unit cost (₹)<input type="number" min="0" step="0.01" value={item.cost} onChange={e=>updateItem(index,'cost',e.target.value)} placeholder="Optional"/></label>}<button type="button" className="outline" disabled={invoice.items.length===1} onClick={()=>update('items',invoice.items.filter((_,i)=>i!==index))}>Remove</button></div>)}
+      {accounts.pending&&<p className="account-pending">Requests are saved on this device until confirmed.</p>}{editingInvoice&&accounts.pending?.action==='updateInvoice'&&<div className="account-pending"><button type="button" className="outline" disabled={accounts.busy} onClick={retryInvoiceEdit}>Retry invoice edit</button>{accounts.rejected&&<button type="button" className="outline" disabled={accounts.busy} onClick={discardInvoiceEdit}>Discard rejected edit and reload</button>}</div>}
+      {documentKind!=='invoice'?<NoteEditor accounts={accounts} invoice={createNoteInvoice} draft={createNoteForm} enabled={notesEnabled} header={documentHeader} onDraftChange={setCreateNoteForm} onSaved={id=>{setShowInvoiceForm(false);setNoteAction('');setNoteDetailId(id);setCreateNoteForm(blankNoteForm());}}/>:<form className="account-form invoice-form" onSubmit={issue}><fieldset disabled={invoiceSaving||!accounts.canQueue}><div className="invoice-edit-content">{documentHeader}
+    <div className="invoice-pos-layout"><div className="invoice-pos-items"><h3>Items</h3>{invoice.items.map((item,index)=><div className="invoice-item-editor" key={index}><label>Item {index+1}<input data-invoice-field="description" aria-label={`Item ${index+1} description`} required maxLength="300" value={item.description} onChange={e=>updateItem(index,'description',e.target.value)}/></label><label>Quantity<input data-invoice-field="quantity" type="number" min="0.001" max="1000000" step="0.001" required value={item.quantity} onChange={e=>updateItem(index,'quantity',e.target.value)}/></label><label>Rate (₹)<input data-invoice-field="rate" type="number" min="0" step="0.01" required value={item.rate} onChange={e=>updateItem(index,'rate',e.target.value)}/></label><label>Line discount (₹)<input data-invoice-field="discount" type="number" min="0" step="0.01" value={item.discount} onChange={e=>updateItem(index,'discount',e.target.value)}/></label>{invoice.type==='sale'&&<label>CP (₹)<input aria-label="Cost price (₹)" data-invoice-field="cost" type="number" min="0" step="0.01" value={item.cost} onChange={e=>updateItem(index,'cost',e.target.value)} placeholder="Optional"/></label>}<button type="button" className="outline" disabled={invoice.items.length===1} onClick={()=>update('items',invoice.items.filter((_,i)=>i!==index))}>Remove</button></div>)}
     <button type="button" className="outline" disabled={invoice.items.length>=50} onClick={addInvoiceItem}>＋ Add item <kbd>Alt + A</kbd></button><label>Invoice notes<textarea maxLength="1000" value={invoice.notes} onChange={e=>update('notes',e.target.value)}/></label>
-    </div><aside className="invoice-pos-summary"><span>Invoice total</span><strong>{preview?money(preview.totalMinor):'—'}</strong><small>{invoice.items.length} item{invoice.items.length===1?'':'s'}</small>{invoice.type==='sale'&&<p className="draft-profit"><span>Gross profit</span><button type="button" aria-label={showDraftProfit?'Hide gross profit':'Show gross profit'} aria-pressed={showDraftProfit} onClick={()=>setShowDraftProfit(!showDraftProfit)}>{showDraftProfit?'◉ Hide':'◎ Show'}</button><strong>{showDraftProfit?(preview?.costTotalMinor===null?'Unavailable — enter all unit costs':preview?money(preview.totalMinor-preview.costTotalMinor):'—'):'••••'}</strong></p>}<p className="help">Review the invoice before issuing. Payments are recorded separately.</p></aside></div>
-    <p className="help">Internal cost and profit are never printed on party statements. Blank costs are unknown, not zero.</p><button type="button" className="outline" onClick={()=>{if(window.confirm('Clear this invoice draft?')){setInvoice(blankInvoice());setPartyQuery('');setShowDraftProfit(false);}}}>Clear draft</button></div><div className="invoice-submit-bar"><div className="invoice-submit-total"><span>Invoice total</span><strong>{preview?money(preview.totalMinor):'—'}</strong></div><button className="primary">Issue invoice <kbd>Ctrl + Enter</kbd></button></div></fieldset></form>
+    </div></div>{invoice.type==='sale'&&<p className="draft-profit"><span>Gross profit</span><button type="button" aria-label={showDraftProfit?'Hide gross profit':'Show gross profit'} aria-pressed={showDraftProfit} onClick={()=>setShowDraftProfit(!showDraftProfit)}>{showDraftProfit?'◉ Hide':'◎ Show'}</button><strong>{showDraftProfit?(preview?.costTotalMinor==null?'Pending · enter CP for every item':money(preview.totalMinor-preview.costTotalMinor)):'••••'}</strong>{preview?.costTotalMinor===null&&<span className="profit-pending">Profit pending · CP missing</span>}</p>}
+    <details className="invoice-shortcuts"><summary>Keyboard shortcuts & help</summary><p>Alt + 1 sale · 2 purchase · 3 credit · 4 debit · Q party · D date · H challan · A add item · J item · U quantity · R rate · C cost price · X discount · V notes · G profit · Ctrl + Enter save. Field shortcuts center the active field. Cost price and profit are never printed.</p></details>{editingInvoice?<button type="button" className="outline" onClick={closeInvoiceForm}>Cancel edit</button>:<button type="button" className="outline" onClick={()=>{if(window.confirm('Clear this invoice draft?')){setInvoice(blankInvoice());setPartyQuery('');setShowDraftProfit(false);}}}>Clear draft</button>}</div><div className="invoice-submit-bar"><div className="invoice-submit-total"><span>Invoice total</span><strong>{preview?money(preview.totalMinor):'—'}</strong></div><button className="primary">{editingInvoice?invoiceSaving?'Saving changes…':'Save changes':'Issue invoice'} <kbd>Ctrl + Enter</kbd></button></div></fieldset></form>}
     </AccountDialog>}
     {party&&showPrint&&<AccountDialog title="Print Statement" busy={preparingPrint||Boolean(printing)} onClose={()=>setShowPrint(false)}>
       <section className="party-statement-workspace">
@@ -242,10 +315,11 @@ export default function AccountsPanel({ accounts, endpoint, enabled, preferences
     </AccountDialog>}
     {invoiceDetail&&<AccountDialog title={`Invoice ${invoiceDetail.invoiceNumber}`} busy={preparingPrint||Boolean(printing)} onClose={()=>setInvoiceDetailId('')}>
       {(error||accounts.error)&&<p className="error" role="alert">{error||accounts.error}</p>}
-      {invoiceDetail._pending&&<p className="notice" role="status">Saved on this device. Uploading in the background; the RF number will appear after confirmation. Printing is available once uploaded.</p>}
-      <div className="invoice-popup-actions">{invoiceDetail.status==='issued'&&<button type="button" className="primary" disabled={blocked||paymentPending||preparingPrint||Boolean(printing)} onClick={payFromInvoice}>{invoiceDetail.type==='sale'?'Receive Payment':'Make Payment'}</button>}{invoiceDetail.status==='issued'&&<button type="button" className="outline" disabled={blocked||preparingPrint||Boolean(printing)} onClick={()=>cancel(invoiceDetail)}>Cancel Invoice</button>}<button type="button" className="primary" disabled={invoiceDetail._pending||blocked||preparingPrint||Boolean(printing)} onClick={printInvoice}>{preparingPrint?'Preparing invoice…':'Print Invoice'}</button></div>
-      <InvoiceDocument invoice={invoiceDetail} preferences={preferences}/>
+      {!invoiceDetail._pending&&<p className="help" role="status">{accounts.cached?'Loaded from a saved snapshot · refresh to confirm':'Synced with Google Sheets'}</p>}{invoiceDetail._pending&&<p className="notice" role="status">Saved on this device. Uploading in the background; the RF number will appear after confirmation. Printing is available once uploaded.</p>}
+      <div className="invoice-popup-actions">{invoiceDetail.status==='issued'&&<button type="button" className="outline" disabled={!Array.isArray(invoiceDetail.items)||!invoiceEditingEnabled||invoiceEditProtected||blocked||preparingPrint||Boolean(printing)} onClick={editInvoice}>Edit Invoice</button>}{invoiceDetail.status==='issued'&&<button type="button" className="primary" disabled={blocked||paymentPending||preparingPrint||Boolean(printing)} onClick={payFromInvoice}>{invoiceDetail.type==='sale'?'Receive Payment':'Make Payment'}</button>}<RecordMenu label={invoiceDetail.invoiceNumber} actions={[{label:'Print Invoice',disabled:invoiceDetail._pending||blocked||preparingPrint||Boolean(printing),onClick:printInvoice},{label:'Delete Invoice',disabled:!deletionEnabled||invoiceDetail._pending||blocked||paymentPending||preparingPrint||Boolean(printing),onClick:()=>deleteInvoice(invoiceDetail)}]}/></div>
+      {!deletionEnabled&&<p className="help">Delete Invoice requires Sheet backend 1.11.0 or newer. Update the script and refresh.</p>}{invoiceDetail.status==='issued'&&!invoiceEditingEnabled&&<p className="help">Invoice editing requires Sheet backend 1.9.0 or newer. Deploy the updated script, then refresh. <button type="button" className="outline" disabled={accounts.refreshing} onClick={()=>accounts.reload()}>{accounts.refreshing?'Checking backend…':'Check backend again'}</button></p>}{invoiceDetail.status==='issued'&&accounts.pending&&<p className="help">Finish or resolve the pending upload before editing this invoice.</p>}{invoiceDetail.status==='issued'&&<div className="invoice-corrections"><button type="button" className="outline" disabled={!notesEnabled||blocked} onClick={()=>{setNoteAction('');setNoteDraft(null);setNoteInvoiceId(invoiceDetail.id);setInvoiceDetailId('');setNoteDetailId('');}}>Create credit / debit note</button><details className="invoice-shortcuts"><summary>About correction notes</summary><p className="help">Use a credit note for a return, discount or overcharge to reduce this invoice. Use a debit note for extra charges to increase it. Any refund/payment is recorded separately.</p></details>{!notesEnabled&&<p className="help">Correction notes require Sheet backend 1.10.0 or newer. Deploy the updated script, then refresh.</p>}{invoiceEditProtected&&<p className="help">Original invoice preserved because it has correction notes. Current value after active notes: {money(invoiceNetValue(invoiceDetail,accounts.notes))}. Use another note for further corrections, or delete the invoice and its notes from the active ledger.</p>}</div>}<InvoiceCostBadge invoice={invoiceDetail}/>{Array.isArray(invoiceDetail.items)?<InvoiceDocument invoice={invoiceDetail} preferences={preferences}/>:<div className="detail-loading" role="status">{detailLoading?'Loading invoice details…':detailError||'Invoice details are not loaded.'}{!detailLoading&&<button type="button" className="outline" onClick={async()=>{setDetailLoading(true);setDetailError('');try{await accounts.loadInvoiceDetails([invoiceDetail.id],{fresh:true});}catch(error){setDetailError(error.message);}finally{setDetailLoading(false);}}}>Retry loading invoice</button>}</div>}{invoiceHasNotes&&<NotesRegister notes={accounts.notes.filter(note=>note.invoiceId===invoiceDetail.id)} range={['0000-01-01','9999-12-31']} onOpenNote={id=>{setInvoiceDetailId('');setNoteAction('');setNoteDetailId(id);}}/>}
     </AccountDialog>}
+    {(noteInvoice||noteDetailId)&&<InvoiceNotes key={`${noteInvoiceId||noteDetailId}:${noteOpenRequest?.request||''}:${noteAction}`} initialAction={noteAction} changesEnabled={noteChangesEnabled} accounts={accounts} invoice={noteInvoice} initialDraft={noteDraft} noteId={noteDetailId} preferences={preferences} enabled={notesEnabled} paymentPending={paymentPending} onPayment={onPayment} onClose={()=>{const id=noteInvoiceId;setNoteAction('');setNoteInvoiceId('');setNoteDetailId('');if(id)setInvoiceDetailId(id);}} onSaved={id=>{setNoteInvoiceId('');setNoteAction('');setNoteDetailId(id);}}/>}
     {printing&&createPortal(<div className="account-print-output">{printing==='statement'&&printSnapshot?<PartyStatement {...printSnapshot} preferences={preferences}/>:printing==='invoice'&&invoicePrintSnapshot?<InvoiceDocument invoice={invoicePrintSnapshot} preferences={preferences}/>:null}</div>,document.body)}
   </section>;
 }

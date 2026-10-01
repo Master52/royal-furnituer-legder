@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { request } from './api.js';
 import { accountBalances } from './accounts.js';
 import { loadAccountCache, saveAccountCache } from './storage.js';
-const EMPTY_ACCOUNTS = {parties:[],invoices:[],transactions:[]};
+const EMPTY_NOTES=[];
+const EMPTY_ACCOUNTS = {parties:[],invoices:[],transactions:[],notes:[]};
 import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock, uploadLock } from './accountQueue.js';
 export default function useAccounts(endpoint, enabled) {
   const [snapshot,setSnapshot] = useState(null);
@@ -47,11 +48,13 @@ export default function useAccounts(endpoint, enabled) {
     setRefreshing(true);
     flight.promise=(async()=>{
       try {
-        const result=await request(endpoint,{},'listAccounts');
+        const result=await request(endpoint,{summary:true},'listAccounts');
         if (!Array.isArray(result.parties) || !Array.isArray(result.invoices) || !Array.isArray(result.transactions)) throw new Error('Update the test Sheet to Code.gs 1.7.0 or newer and deploy a new version.');
         if(active.current!==endpoint || generation.current!==currentGeneration)return null;
         if(lastAppliedRead.current!==appliedBeforeRead){flight.stale=true;return snapshotRef.current?.data||null;}
         const savedAt=new Date().toISOString();
+        // Summary reads invalidate old line items, including direct Sheet edits
+        // that retain the same revision. Open documents fetch details on demand.
         const next={endpoint,data:result,savedAt,cached:false};
         lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);setReadError('');
         saveAccountCache(endpoint,result,savedAt).catch(()=>{});
@@ -81,6 +84,42 @@ export default function useAccounts(endpoint, enabled) {
     reload();
     return()=>{generation.current++;};
   },[endpoint,enabled,reload]);
+  const detailFlights=useRef(new Map());
+  async function loadInvoiceDetails(ids,{fresh=false}={}){
+    const generationAtStart=generation.current,target=endpoint;
+    const current=snapshotRef.current;
+    if(!current||current.endpoint!==target)throw new Error('Refresh your Sheet connection before loading invoice details.');
+    const currentById=new Map(current.data.invoices.map(record=>[record.id,record]));
+    const version=String(current?.data.backendVersion||'').split('.').map(Number);
+    const supportsDetails=version[0]>1||version[0]===1&&version[1]>=13;
+    if(!supportsDetails){const records=ids.map(id=>currentById.get(id));if(records.every(record=>Array.isArray(record?.items)))return records;throw new Error('Refresh your Sheet connection to load invoice details.');}
+    ids=[...new Set(ids)];
+    const missing=ids.filter(id=>fresh||!Array.isArray(currentById.get(id)?.items));
+    if(!missing.length)return ids.map(id=>currentById.get(id));
+    const key=generationAtStart+':'+target+':'+[...new Set(missing)].sort().join('|');
+    const previous=detailFlights.current.get(key);
+    if(previous){
+      if(!fresh)return previous;
+      try{await previous;}catch{/* A fresh read can recover a failed earlier read. */}
+      if(active.current!==target||generation.current!==generationAtStart)throw new Error('The Sheet connection changed.');
+      return loadInvoiceDetails(ids,{fresh:true});
+    }
+    const appliedBeforeDetails=lastAppliedRead.current;
+    const promise=(async()=>{
+      const records=[];
+      for(let offset=0;offset<missing.length;offset+=500){const result=await request(target,{ids:missing.slice(offset,offset+500)},'getInvoices');if(!Array.isArray(result.invoices))throw new Error('Invoice details were not returned. Refresh and check the backend.');const requested=new Set(missing.slice(offset,offset+500));const returned=new Set(result.invoices.map(record=>record?.id));if(returned.size!==requested.size||result.invoices.length!==requested.size||result.invoices.some(record=>!requested.has(record?.id)||!Array.isArray(record.items)))throw new Error('Incomplete invoice details were returned. Refresh and try again.');records.push(...result.invoices);}
+      if(active.current!==target||generation.current!==generationAtStart)throw new Error('The Sheet connection changed.');
+      const latest=snapshotRef.current;
+      const byId=new Map(records.map(record=>[record.id,record]));
+      const latestById=new Map(latest.data.invoices.map(record=>[record.id,record]));
+      if(records.some(record=>{const base=latestById.get(record.id);return !base||Number(base.revision||0)!==Number(record.revision||0)||base.status==='deleted'||lastAppliedRead.current!==appliedBeforeDetails&&base.status!==record.status;}))throw new Error('Invoice changed while loading. Refresh and open it again.');
+      const next={...latest,data:{...latest.data,invoices:latest.data.invoices.map(base=>byId.has(base.id)?{...byId.get(base.id),_summary:false}:base)}};
+      lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(target,next.data,next.savedAt).catch(()=>{});
+      const nextById=new Map(next.data.invoices.map(record=>[record.id,record]));
+      return ids.map(id=>nextById.get(id));
+    })();detailFlights.current.set(key,promise);
+    try{return await promise;}finally{detailFlights.current.delete(key);}
+  }
   const refreshIfStale=useCallback(()=>{
     const current=snapshotRef.current;
     if(!current || current.endpoint!==endpoint || current.cached || Date.now()-Date.parse(current.savedAt)>60000) return reload();
@@ -89,11 +128,12 @@ export default function useAccounts(endpoint, enabled) {
   function applyRecord(action,record){
     const current=snapshotRef.current;
     if(!current||current.endpoint!==endpoint||!record?.id)return false;
-    const collection=action.includes('Party')?'parties':'invoices';
-    const previous=current.data[collection].find(item=>item.id===record.id);
+    const collection=action.includes('Note')?'notes':action.includes('Party')?'parties':'invoices';
+    const previous=(current.data[collection]||[]).find(item=>item.id===record.id);
     const value={...previous,...record};
     if(collection==='invoices'&&!Array.isArray(value.items))return false;
-    const next={...current,data:{...current.data,[collection]:[...current.data[collection].filter(item=>item.id!==value.id),value]}};
+    if(collection==='invoices'){value._summary=false;value.itemSearch=value.items.map(item=>item.description).join(' ');}
+    const next={...current,data:{...current.data,[collection]:[...(current.data[collection]||[]).filter(item=>item.id!==value.id),value]}};
     lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);
     saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
     return true;
@@ -113,11 +153,15 @@ export default function useAccounts(endpoint, enabled) {
         acknowledged=true;
         if(active.current!==operation.endpoint)return false;
         let record=result.record;
-        if(!applyRecord(operation.action,record)){
+        if(operation.action==='deletePayment'){
+          if(result.deleted!==true)throw new Error('Payment deletion was not confirmed.');
+          const current=snapshotRef.current;const next={...current,data:{...current.data,transactions:current.data.transactions.filter(row=>row.id!==operation.payload.id)}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
+        }else if(!applyRecord(operation.action,record)){
           const refreshed=await reload({fresh:true});
-          record=operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
+          record=operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
           if(!record)throw new Error('Upload was acknowledged. Retry to confirm the saved record.');
         }
+        if(operation.action==='deleteInvoice')setLastInvoice(previous=>previous?.id===record.id?null:previous);
         if(operation.action==='createInvoice')setLastInvoice({id:record.id,number:record.invoiceNumber});
         await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(operation)));
         return true;
@@ -129,28 +173,35 @@ export default function useAccounts(endpoint, enabled) {
       }
     });}finally{working.current=false;setBusy(false);}
   }
-  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice'].includes(item.action));
+  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote'].includes(item.action));
   async function enqueue(action,payload){
     if(!canQueue)return false;
     const operation={endpoint,action,payload};
-    try{await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
+    try{await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
     catch{setError('Browser storage is unavailable. The record was not queued.');return false;}
     if(!pending){setError('');setRejected(false);}
     return true;
   }
   // Dependent invoices wait until their newly created party is confirmed.
   useEffect(()=>{
-    if(pending && !pending.failure && ['createParty','createInvoice'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
+    if(pending && !pending.failure && ['createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
   },[pending,endpoint,enabled]);
   useEffect(()=>{
-    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['createParty','createInvoice'].includes(operation.action))send(operation);};
+    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(operation.action))send(operation);};
     window.addEventListener('online',online);return()=>window.removeEventListener('online',online);
   });
   async function save(action,payload){
     if(queueRef.current.length || working.current)return false;
+    working.current=true;setBusy(true);
     const operation={endpoint,action,payload};
-    try{await updateQueue(items=>{if(items.length)throw new Error('Another request is already queued.');return [operation];});}catch{setError('Browser storage is unavailable. The record was not sent.');return false;}
+    try{await updateQueue(items=>{if(items.length)throw new Error('Another request is already queued.');return [operation];});}catch{working.current=false;setBusy(false);setError('Browser storage is unavailable. The record was not sent.');return false;}
+    working.current=false;
     return send(operation);
+  }
+  async function queueDeletes(operations){
+    if(!loaded||busy||working.current||queueRef.current.length||!operations.length)return false;
+    try{await updateQueue(items=>{if(items.length)throw new Error('Another upload is pending.');return operations.map(operation=>({...operation,endpoint}));});setError('');setRejected(false);return true;}
+    catch(error){setError(error.message||'Could not save deletion requests on this device.');return false;}
   }
   async function discardRejected() {
     if (!rejected || busy || working.current) return;
@@ -159,8 +210,8 @@ export default function useAccounts(endpoint, enabled) {
       const snapshot=await reload({fresh:true});
       if(!snapshot)return;
       const {action,payload}=pending;
-      const existing=action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
-      const mayHaveSaved=(action==='createParty'||action==='createInvoice')?Boolean(existing):action==='updateParty'?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
+      const existing=action==='deletePayment'?snapshot.transactions.find(row=>row.id===payload.id):action.includes('Note')?snapshot.notes?.find(row=>row.id===payload.id):action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
+      const mayHaveSaved=action==='deletePayment'?!existing:action==='deleteParty'?Boolean(existing?.archivedAt):['deleteInvoice','deleteInvoiceNote'].includes(action)?existing?.status==='deleted':['createParty','createInvoice','createInvoiceNote'].includes(action)?Boolean(existing):['updateParty','updateInvoice','updateInvoiceNote'].includes(action)?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
       if(mayHaveSaved){setError('This record exists in Google Sheets. Retry the saved request to confirm it before continuing.');return;}
       if(action==='createParty' && queueRef.current.some(item=>item.action==='createInvoice'&&item.payload.partyId===payload.id)){setError('An invoice is waiting for this party. Correct the rejected party before retrying.');return;}
       await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(pending)));setRejected(false);setError('');return true;
@@ -184,8 +235,16 @@ export default function useAccounts(endpoint, enabled) {
     window.addEventListener('storage',changed);return()=>window.removeEventListener('storage',changed);
   },[reload]);
   const queuedHere=useMemo(()=>queue.filter(item=>item.endpoint===endpoint&&!item.invalid),[queue,endpoint]);
-  const selectableParties=useMemo(()=>[...data.parties,...queuedHere.filter(item=>item.action==='createParty'&&!data.parties.some(p=>p.id===item.payload.id)).map(item=>({...item.payload,_pending:true}))],[data.parties,queuedHere]);
-  const pendingInvoices=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoice'&&!data.invoices.some(inv=>inv.id===item.payload.id)).map(item=>({...item.payload,invoiceNumber:'Pending RF number',status:'pending',_pending:true})),[queuedHere,data.invoices]);
-  const partyBalances=useMemo(()=>accountBalances(data.parties,data.invoices,data.transactions),[data.parties,data.invoices,data.transactions]);
-  return {...data,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,refreshIfStale,save,queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
+  const parties=useMemo(()=>data.parties.filter(party=>!party.archivedAt),[data.parties]);
+  const invoices=useMemo(()=>data.invoices.filter(invoice=>invoice.status!=='deleted'),[data.invoices]);
+  const partyIds=useMemo(()=>new Set(data.parties.map(party=>party.id)),[data.parties]);
+  const invoiceById=useMemo(()=>new Map(data.invoices.map(invoice=>[invoice.id,invoice])),[data.invoices]);
+  const noteIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.id)),[data.notes]);
+  const selectableParties=useMemo(()=>[...parties,...queuedHere.filter(item=>item.action==='createParty'&&!partyIds.has(item.payload.id)).map(item=>({...item.payload,_pending:true}))],[parties,partyIds,queuedHere]);
+  const pendingInvoices=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoice'&&!invoiceById.has(item.payload.id)).map(item=>({...item.payload,invoiceNumber:'Pending RF number',status:'pending',_pending:true})),[queuedHere,invoiceById]);
+  const notes=useMemo(()=>{const deleted=new Set(data.invoices.filter(invoice=>invoice.status==='deleted').map(invoice=>invoice.id));return (data.notes||EMPTY_NOTES).filter(note=>note.status!=='deleted'&&!deleted.has(note.invoiceId));},[data.notes,data.invoices]);
+  const pendingNotes=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoiceNote'&&!noteIds.has(item.payload.id)&&invoiceById.has(item.payload.invoiceId)&&invoiceById.get(item.payload.invoiceId).status!=='deleted').map(item=>{const invoice=invoiceById.get(item.payload.invoiceId);return {...item.payload,invoiceNumber:invoice?.invoiceNumber,partyId:invoice?.partyId,partyName:invoice?.partyName,partyPhone:invoice?.partyPhone,partyAddress:invoice?.partyAddress,invoiceType:invoice?.type,status:'pending',_pending:true,noteNumber:'Awaiting note number'};}),[queuedHere,noteIds,invoiceById]);
+  const partyBalances=useMemo(()=>accountBalances(parties,invoices,data.transactions,notes),[parties,invoices,data.transactions,notes]);
+  const notedInvoiceIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.invoiceId)),[data.notes]);
+  return {...data,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
 }
