@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.14.0';
+const BACKEND_VERSION = '1.15.3';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason'];
 
 function setup() {
@@ -257,12 +257,13 @@ function refreshReport() {
 const ACCOUNT_HEADERS = {
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt'],
   Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber'],
-  InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId'],
+  InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
+  InvoiceMeasurements:['id','invoiceId','itemId','description','lengthMilli','widthMilli','quantityMilli','pieces'],
   InvoiceHistory: ['id','invoiceId','revision','changedAt','editId','snapshot'],
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber'],InvoiceItems:['versionId'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -302,7 +303,8 @@ function accountAppendRows_(ss,name,records){
   const started=Date.now(),startRow=table.lastRow+1;
   const rows=records.map(record=>literalAccountRow_(table.headers,record));
   table.sheet.getRange(startRow,1,rows.length,table.headers.length).setNumberFormat('@').setValues(rows);
-  records.forEach((record,index)=>{const values=table.headers.map(key=>record[key]??'');const stored=Object.fromEntries(table.headers.map((key,column)=>[key,values[column]]));table.byId.set(record.id,{record:stored,rowIndex:startRow+index,values});table.records=[...table.records,stored];});
+  const appended=records.map((record,index)=>{const values=table.headers.map(key=>record[key]??'');const stored=Object.fromEntries(table.headers.map((key,column)=>[key,values[column]]));table.byId.set(record.id,{record:stored,rowIndex:startRow+index,values});return stored;});
+  table.records=[...table.records,...appended];
   table.lastRow+=rows.length;if(accountRequest_){accountRequest_.writes++;accountRequest_.writeMs+=Date.now()-started;}
 }
 function accountId_(id) { if (typeof id!=='string' || !/^[a-zA-Z0-9-]{20,80}$/.test(id)) throw new Error('Invalid record ID.'); }
@@ -333,18 +335,20 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
   let total=0,cost=0,complete=true;
   const items=t.items.map((item,index)=>{
     if (item.id!==t.id+'-'+(version?version+'-':'')+(index+1) || item.invoiceId!==t.id) throw new Error('Invalid invoice item ID.');
-    const quantity=item.quantityMilli;
-    if (!Number.isSafeInteger(quantity) || quantity<=0 || quantity>1000000000) throw new Error('Invalid item quantity.');
+    const unit=item.billingUnit||'',measurements=item.measurements||[],itemNote=accountText_(item.itemNote??'',500);
+    const quantityInfo=billingQuantity_({...item,billingUnit:unit,measurements});
+    const quantity=quantityInfo.quantityMilli;
+    if(item.quantityMilli!==quantity)throw new Error('Item quantity does not match its measurements.');
+    if(unit&&item.measurementCount!==measurements.length)throw new Error('Measurement row count does not match the item.');
     const rate=accountAmount_(item.rateMinor),discount=accountAmount_(item.discountMinor);
-    if (!Number.isSafeInteger(rate*quantity)) throw new Error('Item value is too large.');
-    const lineTotal=accountAmount_(Math.round(rate*quantity/1000)-discount);
+    const lineTotal=accountAmount_(billingPrice_(rate,quantityInfo)-discount);
     const unitCost=t.type==='sale' && item.costMinor!==null && item.costMinor!=='' && item.costMinor!==undefined ? accountAmount_(item.costMinor) : null;
-    if (unitCost!==null && !Number.isSafeInteger(unitCost*quantity)) throw new Error('Item cost is too large.');
-    const lineCost=unitCost===null?null:accountAmount_(Math.round(unitCost*quantity/1000));
+    const lineCost=unitCost===null?null:billingPrice_(unitCost,quantityInfo);
     total+=lineTotal;
     if (lineCost===null) complete=false; else cost+=lineCost;
-    return {id:item.id,invoiceId:t.id,description:accountText_(item.description,300,true),quantityMilli:quantity,rateMinor:rate,discountMinor:discount,lineTotalMinor:lineTotal,costMinor:unitCost,lineCostMinor:lineCost,versionId:version};
+    return {id:item.id,invoiceId:t.id,description:accountText_(item.description,300,true),...(itemNote?{itemNote}:{}),quantityMilli:quantity,rateMinor:rate,discountMinor:discount,lineTotalMinor:lineTotal,costMinor:unitCost,lineCostMinor:lineCost,versionId:version,...(unit?{billingUnit:unit,measurementUnit:['sqft','rft'].includes(unit)?item.measurementUnit:'',measurementMode:item.measurementMode||'quantity',measurementCount:measurements.length,measurements:measurements.map(row=>({description:row.description.trim(),lengthMilli:['sqft','rft'].includes(unit)?row.lengthMilli:0,widthMilli:unit==='sqft'||item.measurementMode==='perimeter'?row.widthMilli:0,quantityMilli:['sqft','rft'].includes(unit)?0:row.quantityMilli,pieces:row.pieces}))}: {})};
   });
+  if(items.reduce((sum,item)=>sum+(item.measurements?.length||0),0)>1000)throw new Error('An invoice supports at most 1,000 measurement rows.');
   if (total<=0) throw new Error('Invoice total must be positive.');
   accountAmount_(total); accountAmount_(cost);
   return {...invoice,totalMinor:total,costTotalMinor:complete?cost:null,itemCount:items.length,items};
@@ -360,11 +364,13 @@ function accountReadRows_(ss,name) {
   if(idIndex<0 || (ACCOUNT_HEADERS[name] && ACCOUNT_HEADERS[name].some(key=>!headers.includes(key)&&!ACCOUNT_OPTIONAL_HEADERS[name]?.includes(key)))) throw new Error('Run setup() to update the '+name+' headers.');
   return values.slice(1).filter(row=>row[idIndex]).map(row=>Object.fromEntries(headers.map((key,index)=>[key,row[index]])));
 }
-function accountInvoiceRecord_(invoice,allItems){
+function accountInvoiceRecord_(invoice,allItems,measurementIndex){
   const lines=allItems.filter(item=>(item.versionId||'')===(invoice.itemVersion||'')).sort((a,b)=>Number(a.id.split('-').pop())-Number(b.id.split('-').pop()));
   if(lines.length!==Number(invoice.itemCount))throw new Error('Invoice '+invoice.invoiceNumber+' has missing or duplicate items.');
-  const normalized=normalizedInvoice_({...invoice,schemaVersion:Number(invoice.schemaVersion),items:lines.map(item=>({...item,quantityMilli:Number(item.quantityMilli),rateMinor:Number(item.rateMinor),discountMinor:Number(item.discountMinor),costMinor:item.costMinor===''?null:Number(item.costMinor)}))});
+  if(lines.some(item=>Number(item.measurementCount||0)>0)&&!measurementIndex)measurementIndex=accountMeasurementIndex_(spreadsheet_());
+  const normalized=normalizedInvoice_({...invoice,schemaVersion:Number(invoice.schemaVersion),items:lines.map(item=>({...item,...(item.billingUnit?{measurementCount:Number(item.measurementCount||0),measurements:(measurementIndex?.get(item.id)||[]).map((row,index)=>{if(row.id!==item.id+'-m'+(index+1)||row.invoiceId!==invoice.id)throw new Error('Invalid measurement row identity.');return {description:row.description,lengthMilli:Number(row.lengthMilli),widthMilli:Number(row.widthMilli),quantityMilli:Number(row.quantityMilli),pieces:Number(row.pieces)};})}:{}),quantityMilli:Number(item.quantityMilli),rateMinor:Number(item.rateMinor),discountMinor:Number(item.discountMinor),costMinor:item.costMinor===''?null:Number(item.costMinor)}))});
   if(!accountSame_(invoice,normalized,['totalMinor','costTotalMinor'])||!['issued','cancelled','deleted'].includes(invoice.status))throw new Error('Invalid invoice totals or status. Repair '+invoice.invoiceNumber+'.');
+  normalized.items.forEach((item,index)=>{if(!accountSame_(lines[index],item,['quantityMilli','lineTotalMinor','lineCostMinor']))throw new Error('Invalid invoice item totals. Repair '+invoice.invoiceNumber+'.');});
   const revision=Number(invoice.revision||0);
   if(!Number.isSafeInteger(revision)||revision<0)throw new Error('Invalid invoice revision.');
   return {...invoice,...normalized,revision};
@@ -375,7 +381,8 @@ function accountAction_(action,t) {
     const parties=accountReadRows_(ss,'Parties'), headers=accountReadRows_(ss,'Invoices'), items=accountReadRows_(ss,'InvoiceItems');
     const itemsByInvoice=new Map(),partiesById=new Map(parties.map(p=>[p.id,p]));
     items.forEach(item=>{if(!itemsByInvoice.has(item.invoiceId))itemsByInvoice.set(item.invoiceId,[]);itemsByInvoice.get(item.invoiceId).push(item);});
-    const invoices=headers.map(invoice=>accountInvoiceRecord_(invoice,itemsByInvoice.get(invoice.id)||[]));
+    const measurementIndex=items.some(item=>Number(item.measurementCount||0)>0)?accountMeasurementIndex_(ss):new Map();
+    const invoices=headers.map(invoice=>accountInvoiceRecord_(invoice,itemsByInvoice.get(invoice.id)||[],measurementIndex));
     if (new Set(parties.map(p=>p.id)).size!==parties.length || new Set(headers.map(i=>i.id)).size!==headers.length) throw new Error('Duplicate party or invoice IDs. Repair the Sheet before continuing.');
     parties.forEach(p=>{accountId_(p.id);accountAmount_(Number(p.openingBalanceMinor),true);if(!validDate_(p.openingDate))throw new Error('Invalid party opening date.');});
     const transactions=accountReadRows_(ss,'Transactions').filter(row=>!row.deletedAt);
@@ -387,13 +394,14 @@ function accountAction_(action,t) {
     const noteTotals=new Map();
     notes.filter(note=>note.status==='issued').forEach(note=>{const value=noteTotals.get(note.invoiceId)||{amount:0,cost:0,known:true};const sign=note.type==='credit'?-1:1;value.amount+=sign*note.amountMinor;if(note.costAdjustmentMinor===null)value.known=false;else value.cost+=sign*note.costAdjustmentMinor;noteTotals.set(note.invoiceId,value);});
     invoices.forEach(invoice=>{const adjustment=noteTotals.get(invoice.id);if(!adjustment)return;const net=Number(invoice.totalMinor)+adjustment.amount;if(!Number.isSafeInteger(net)||net<0||net>100000000000)throw new Error('Invalid correction totals. Repair the Sheet before using balances.');if(invoice.costTotalMinor!==null&&invoice.costTotalMinor!==''&&adjustment.known){const cost=Number(invoice.costTotalMinor)+adjustment.cost;if(!Number.isSafeInteger(cost)||cost<0||cost>100000000000)throw new Error('Invalid cost correction totals.');}});
-    return {ok:true,parties,invoices:t?.summary?invoices.map(invoice=>{const {items,...summary}=invoice;return {...summary,_summary:true,itemSearch:items.map(item=>item.description).join(' ')};}):invoices,transactions,notes};
+    return {ok:true,parties,invoices:t?.summary?invoices.map(invoice=>{const {items,...summary}=invoice;return {...summary,_summary:true,itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes};
   }
   if(action==='getInvoices'){
     if(!t||!Array.isArray(t.ids)||!t.ids.length||t.ids.length>500)throw new Error('Choose between 1 and 500 invoices.');
     t.ids.forEach(accountId_);const wanted=new Set(t.ids),headers=accountReadRows_(ss,'Invoices'),allItems=accountReadRows_(ss,'InvoiceItems');
     const byInvoice=new Map();allItems.forEach(item=>{if(wanted.has(item.invoiceId)){if(!byInvoice.has(item.invoiceId))byInvoice.set(item.invoiceId,[]);byInvoice.get(item.invoiceId).push(item);}});
-    const invoices=headers.filter(invoice=>wanted.has(invoice.id)&&invoice.status!=='deleted').map(invoice=>accountInvoiceRecord_(invoice,byInvoice.get(invoice.id)||[]));
+    const measurementIndex=allItems.some(item=>wanted.has(item.invoiceId)&&Number(item.measurementCount||0)>0)?accountMeasurementIndex_(ss):new Map();
+    const invoices=headers.filter(invoice=>wanted.has(invoice.id)&&invoice.status!=='deleted').map(invoice=>accountInvoiceRecord_(invoice,byInvoice.get(invoice.id)||[],measurementIndex));
     if(invoices.length!==wanted.size)throw new Error('An invoice no longer exists in the active ledger. Refresh and try again.');return {ok:true,invoices};
   }
   if (!t || typeof t!=='object') throw new Error('Missing record.');
@@ -433,6 +441,7 @@ function accountAction_(action,t) {
     const oldItems=allItems.filter(row=>!(row.versionId||''));
     if (oldItems.some(old=>!items.some(item=>item.id===old.id&&accountSame_(old,item,ACCOUNT_HEADERS.InvoiceItems)))) throw new Error('This invoice ID was already used for different items. Retry the original request.');
     if (existing) {
+      accountStageMeasurements_(ss,items,true);
       const original=existing.itemVersion?JSON.parse(accountRows_(ss,'InvoiceHistory').find(row=>row.invoiceId===t.id&&Number(row.revision)===0)?.snapshot||'null'):existing;
       if (!original || !accountSame_(original,invoice,Object.keys(invoice).filter(key=>key!=='invoiceNumber'||invoice.invoiceNumber)) || oldItems.length!==items.length) throw new Error('This ID already belongs to a different invoice.');
       return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
@@ -453,6 +462,7 @@ function accountAction_(action,t) {
     // Items are staged first. Only a complete parent row makes them visible to readers.
     // Deterministic item IDs allow recovery if the request fails between these writes.
     const oldItemIds=new Set(oldItems.map(item=>item.id));accountAppendRows_(ss,'InvoiceItems',items.filter(item=>!oldItemIds.has(item.id)));
+    accountStageMeasurements_(ss,items);
     SpreadsheetApp.flush();
     record={...invoice,items,partyName:party.name,partyPhone:party.phone,partyAddress:party.address,status:'issued',createdAt:new Date().toISOString(),cancelledAt:'',cancelReason:'',deletedAt:'',deleteReason:'',revision:0,lastEditId:'',updatedAt:''};
     accountWrite_(ss,'Invoices',record);
@@ -468,16 +478,20 @@ function accountAction_(action,t) {
     const staged=allItems.filter(row=>row.versionId===t._editId);
     if(staged.some(old=>!normalized.items.some(item=>item.id===old.id&&accountSame_(old,item,ACCOUNT_HEADERS.InvoiceItems))))throw new Error('This edit ID was already used for different items. Retry the original edit.');
     if(existing.lastEditId===t._editId){
+      accountStageMeasurements_(ss,normalized.items,true);
       if(!accountSame_(existing,normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
       return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
     }
     const history=accountRows_(ss,'InvoiceHistory');
     const committed=history.filter(row=>row.invoiceId===t.id).map(row=>JSON.parse(row.snapshot)).find(previous=>previous.id===t.id&&previous.lastEditId===t._editId);
     if(committed){
+      accountStageMeasurements_(ss,normalized.items,true);
       if(!accountSame_(committed,normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
       return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
     }
     if(existing.status!=='issued')throw new Error('Cancelled invoices cannot be edited.');
+    if(t.itemDescriptionSchemaVersion!==1&&allItems.some(item=>(item.versionId||'')===(existing.itemVersion||'')&&item.itemNote))throw new Error('Update the app before editing an invoice with item descriptions.');
+    if(t.measurementSchemaVersion!==1&&allItems.some(item=>(item.versionId||'')===(existing.itemVersion||'')&&item.billingUnit))throw new Error('Update the app before editing an invoice with billing units or measurements.');
     if(!Number.isSafeInteger(t._expectedRevision)||Number(existing.revision||0)!==t._expectedRevision){const error=new Error('Invoice changed on another device. Reload it before editing.');error.code='EDIT_CONFLICT';throw error;}
     if(accountRows_(ss,'InvoiceNotes').some(note=>note.invoiceId===t.id))throw new Error('This invoice has correction notes. Add a credit or debit note instead of editing the original.');
     const previous=accountInvoiceRecord_(existing,allItems),changedAt=new Date().toISOString();
@@ -486,6 +500,7 @@ function accountAction_(action,t) {
     const historyId=t.id+'-'+t._editId;
     if(!history.some(row=>row.id===historyId))accountWrite_(ss,'InvoiceHistory',{id:historyId,invoiceId:t.id,revision:previous.revision,changedAt,editId:t._editId,snapshot:JSON.stringify(previous)});
     const stagedIds=new Set(staged.map(item=>item.id));accountAppendRows_(ss,'InvoiceItems',normalized.items.filter(item=>!stagedIds.has(item.id)));
+    accountStageMeasurements_(ss,normalized.items);
     SpreadsheetApp.flush();
     record={...existing,...normalized,revision:previous.revision+1,lastEditId:t._editId,updatedAt:changedAt};
     accountWrite_(ss,'Invoices',record,true);
@@ -578,7 +593,8 @@ function accountAction_(action,t) {
     if(party.archivedAt)return {ok:true,id:t.id,record:party};
     if(!Number.isSafeInteger(t._expectedRevision)||t._expectedRevision!==Number(party.revision||0))throw new Error('Party changed. Refresh before deleting.');
     const invoices=accountRows_(ss,'Invoices'),payments=accountReadRows_(ss,'Transactions');
-    if(Number(party.openingBalanceMinor)!==0)throw new Error('This party has an opening balance and cannot be deleted.');
+    const openingBalance=accountAmount_(Number(party.openingBalanceMinor),true);
+    if((openingBalance!==0||t._expectedOpeningBalanceMinor!==undefined)&&(!Number.isSafeInteger(t._expectedOpeningBalanceMinor)||t._expectedOpeningBalanceMinor!==openingBalance)){const error=new Error('Confirm the current opening balance before deleting this party. Refresh and try again.');error.code='EDIT_CONFLICT';throw error;}
     if(invoices.some(invoice=>invoice.partyId===party.id&&invoice.status==='issued')||payments.some(payment=>payment.partyId===party.id&&!payment.deletedAt))throw new Error('This party has active invoices or payments. Delete those records first.');
     record={...party,archivedAt:new Date().toISOString(),updatedAt:new Date().toISOString(),revision:Number(party.revision||0)+1};
     accountWrite_(ss,'Parties',record,true);
@@ -623,4 +639,56 @@ function validateNoteTotals_(invoice,notes){
     const cost=Number(invoice.costTotalMinor)+active.reduce((sum,note)=>sum+(note.type==='credit'?-1:1)*Number(note.costAdjustmentMinor),0);
     if(!Number.isSafeInteger(cost)||cost<0||cost>100000000000)throw new Error('This change would make the recorded cost negative or too large. Adjust dependent cost notes first.');
   }
+}
+
+// Exact rational billing; mirrored in src/measurements.js and checked by regression tests.
+function billingQuantity_(item){
+  const unit=item.billingUnit||'',mode=item.measurementMode||'quantity';
+  if(!['','nos','sqft','rft','kg'].includes(unit))throw new Error('Choose a supported billing unit.');
+  const rows=item.measurements||[];
+  if(!Array.isArray(rows)||rows.length>100)throw new Error('Each item group supports at most 100 measurement rows.');
+  if(!unit&&rows.length)throw new Error('Choose a billing unit for grouped measurements.');
+  if(unit==='sqft'&&mode!=='dimensions'||unit==='rft'&&!['dimensions','perimeter'].includes(mode))throw new Error('Choose the measurement calculation.');
+  if(['sqft','rft'].includes(unit)&&!['feet','inches'].includes(item.measurementUnit))throw new Error('Choose Feet or Inches.');
+  if(!['sqft','rft'].includes(unit)&&unit&&mode!=='quantity')throw new Error('This unit uses quantity or weight.');
+  if(['sqft','rft'].includes(unit)&&!rows.length)throw new Error('Add at least one size to this item group.');
+  let numerator=BigInt(0),denominator=BigInt(1000);
+  if(rows.length){
+    if(unit==='sqft')denominator=item.measurementUnit==='inches'?BigInt(144000000):BigInt(1000000);
+    else if(unit==='rft')denominator=item.measurementUnit==='inches'?BigInt(12000):BigInt(1000);
+    for(const row of rows){
+      if(typeof row.description!=='string'||row.description.length>150)throw new Error('Measurement descriptions must be at most 150 characters.');
+      if(!Number.isSafeInteger(row.pieces)||row.pieces<=0||row.pieces>1000000)throw new Error('Pieces must be a whole number between 1 and 1,000,000.');
+      const positive=value=>Number.isSafeInteger(value)&&value>0&&value<=1000000000;
+      let value;
+      if(unit==='sqft'){if(!positive(row.lengthMilli)||!positive(row.widthMilli))throw new Error('Enter valid length and width.');value=BigInt(row.lengthMilli)*BigInt(row.widthMilli);}
+      else if(unit==='rft'){if(!positive(row.lengthMilli)||mode==='perimeter'&&!positive(row.widthMilli))throw new Error('Enter valid frame dimensions or length.');value=mode==='perimeter'?BigInt(2)*(BigInt(row.lengthMilli)+BigInt(row.widthMilli)):BigInt(row.lengthMilli);}
+      else {if(!positive(row.quantityMilli))throw new Error('Enter a valid weight or quantity.');value=BigInt(row.quantityMilli);}
+      numerator+=value*BigInt(row.pieces);
+    }
+  }else{if(!Number.isSafeInteger(item.quantityMilli)||item.quantityMilli<=0||item.quantityMilli>1000000000)throw new Error('Enter a valid item quantity.');numerator=BigInt(item.quantityMilli);}
+  if(numerator<=BigInt(0)||numerator>BigInt(1000000)*denominator)throw new Error('Total item quantity must be positive and no greater than 1,000,000.');
+  return {numerator,denominator,quantityMilli:Number((numerator*BigInt(1000)+denominator/BigInt(2))/denominator)};
+}
+function billingPrice_(rate,quantity){
+  if(!Number.isSafeInteger(rate)||rate<0||rate>100000000000)throw new Error('Invalid unit price.');
+  const amount=(BigInt(rate)*quantity.numerator+quantity.denominator/BigInt(2))/quantity.denominator;
+  if(amount>BigInt(100000000000))throw new Error('Item amount exceeds the supported limit.');
+  return Number(amount);
+}
+
+function accountMeasurementIndex_(ss){
+  const records=accountReadRows_(ss,'InvoiceMeasurements'),byItem=new Map(),ids=new Set();
+  records.forEach(row=>{if(ids.has(row.id))throw new Error('Duplicate measurement IDs. Repair the Sheet.');ids.add(row.id);if(!byItem.has(row.itemId))byItem.set(row.itemId,[]);byItem.get(row.itemId).push(row);});
+  byItem.forEach(rows=>rows.sort((a,b)=>Number(a.id.split('-m').pop())-Number(b.id.split('-m').pop())));return byItem;
+}
+function accountStageMeasurements_(ss,items,verifyOnly=false){
+  const expected=items.flatMap(item=>(item.measurements||[]).map((row,index)=>({id:item.id+'-m'+(index+1),invoiceId:item.invoiceId,itemId:item.id,...row})));
+  if(!expected.length)return;
+  const table=accountTable_(ss,'InvoiceMeasurements'),wantedItems=new Set(items.map(item=>item.id)),byId=new Map(expected.map(row=>[row.id,row]));
+  const existing=table.records.filter(row=>wantedItems.has(row.itemId));
+  if(expected.some(row=>table.byId.has(row.id)&&!accountSame_(table.byId.get(row.id).record,row,ACCOUNT_HEADERS.InvoiceMeasurements)))throw new Error('This measurement ID belongs to different saved data. Repair the Sheet before retrying.');
+  if(existing.some(row=>!byId.has(row.id)||!accountSame_(row,byId.get(row.id),ACCOUNT_HEADERS.InvoiceMeasurements)))throw new Error('This request ID was already used for different measurements. Retry the original request.');
+  const missing=expected.filter(row=>!table.byId.has(row.id));if(verifyOnly&&missing.length)throw new Error('Saved invoice has missing measurements. Repair the Sheet before continuing.');
+  if(!verifyOnly)accountAppendRows_(ss,'InvoiceMeasurements',missing);
 }

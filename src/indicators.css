@@ -1,0 +1,50 @@
+/* Colour indicates meaning; labels, arrows and selected states remain visible. */
+@media screen {
+  :root {
+    --received-ink:#15803d; --received-bg:#f0fdf4; --received-border:#86efac;
+    --paid-ink:#b91c1c; --paid-bg:#fef2f2; --paid-border:#fca5a5;
+    --sale-ink:#1d4ed8; --sale-bg:#eff6ff; --sale-border:#93c5fd;
+    --purchase-ink:#7e22ce; --purchase-bg:#faf5ff; --purchase-border:#d8b4fe;
+    --attention-ink:#b45309; --attention-bg:#fffbeb; --attention-border:#fcd34d;
+    --inactive-ink:#64748b; --inactive-bg:#f8fafc; --inactive-border:#cbd5e1;
+  }
+  :root[data-theme=dark] {
+    --received-ink:#86efac; --received-bg:#102c1d; --received-border:#34734b;
+    --paid-ink:#fca5a5; --paid-bg:#36191c; --paid-border:#94414b;
+    --sale-ink:#93c5fd; --sale-bg:#142743; --sale-border:#456c9e;
+    --purchase-ink:#d8b4fe; --purchase-bg:#2c1d40; --purchase-border:#78529a;
+    --attention-ink:#fcd34d; --attention-bg:#342b14; --attention-border:#8b702c;
+    --inactive-ink:#cbd5e1; --inactive-bg:#26313c; --inactive-border:#596575;
+  }
+  [data-tone=received] {--tone-ink:var(--received-ink);--tone-bg:var(--received-bg);--tone-border:var(--received-border)}
+  [data-tone=paid] {--tone-ink:var(--paid-ink);--tone-bg:var(--paid-bg);--tone-border:var(--paid-border)}
+  [data-tone=sale] {--tone-ink:var(--sale-ink);--tone-bg:var(--sale-bg);--tone-border:var(--sale-border)}
+  [data-tone=purchase] {--tone-ink:var(--purchase-ink);--tone-bg:var(--purchase-bg);--tone-border:var(--purchase-border)}
+  [data-tone=attention] {--tone-ink:var(--attention-ink);--tone-bg:var(--attention-bg);--tone-border:var(--attention-border)}
+  [data-tone=inactive] {--tone-ink:var(--inactive-ink);--tone-bg:var(--inactive-bg);--tone-border:var(--inactive-border)}
+
+  html :is(.record-type,.record-status)[data-tone] {color:var(--tone-ink);background:var(--tone-bg);border:1px solid var(--tone-border)}
+  html :is(.activity-amount,.party-amount)[data-tone] {color:var(--tone-ink)}
+  html :is(.document-types,.direction-picker,.party-balance-tabs,.history-category-tabs,.entry-categories) button[data-tone] {color:var(--tone-ink);border-color:var(--tone-border)}
+  html :is(.document-types,.direction-picker,.party-balance-tabs,.history-category-tabs,.entry-categories) button[data-tone][aria-pressed=true] {color:var(--tone-ink);background:var(--tone-bg);border-color:var(--tone-ink);box-shadow:inset 0 -3px var(--tone-ink)}
+  html :is(.document-types,.direction-picker,.party-balance-tabs,.history-category-tabs,.entry-categories) button[data-tone] kbd {color:inherit;background:transparent;border-color:var(--tone-border)}
+  html :is(.document-types,.direction-picker,.party-balance-tabs,.history-category-tabs,.entry-categories) button[data-tone][aria-pressed=false] {background:transparent}
+  html .category-card[data-tone]>strong {color:var(--tone-ink)}
+  html .category-card[data-tone] .category-symbol {color:var(--tone-ink);background:var(--tone-bg)}
+  html .record-type[data-tone] {display:inline-block;padding:4px 7px;border-radius:6px;line-height:1.3}
+  html :is(.business-metrics article,.method-total)[data-tone]>strong {color:var(--tone-ink)}
+  html .invoice-open-row[data-tone] {border-left:3px solid var(--tone-ink)}
+  html .invoice-open-row[data-tone] .party-invoice-amount {color:var(--tone-ink)}
+  html .history-record[data-tone] {border-left:3px solid var(--tone-ink)}
+  html .history-record[data-tone] .history-record-open>strong {color:var(--tone-ink)}
+  html .sync-status[data-tone] {color:var(--tone-ink);background:var(--tone-bg);border-color:var(--tone-border)}
+  html .sync-status[data-tone] small {color:var(--tone-ink)}
+  html :is(.profit-pending,.pending,.cache-status,.editing-banner,.account-pending,.account-dialog .notice) {color:var(--attention-ink);background:var(--attention-bg);border-color:var(--attention-border)}
+  html :is(.in,.connected) {color:var(--received-ink)}
+  html :is(.out,.error,.danger-action,.bulk-delete-button,.delete-transaction,.disconnect) {color:var(--paid-ink)}
+  html .error {background:var(--paid-bg);border-color:var(--paid-border)}
+  html :is(.danger-action,.bulk-delete-button,.delete-transaction,.disconnect):hover:not(:disabled) {color:var(--paid-ink);background:var(--paid-bg);border-color:var(--paid-border)}
+  html .deleted-list li {color:var(--inactive-ink);background:var(--inactive-bg);border-color:var(--inactive-border)}
+  html .invoice-cancelled {color:var(--inactive-ink);background:var(--inactive-bg);border-color:var(--inactive-border)}
+  html button:disabled {opacity:.55}
+}

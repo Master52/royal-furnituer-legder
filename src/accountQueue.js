@@ -11,8 +11,13 @@ export function readAccountQueue(storage){
 export function writeAccountQueue(storage,queue){
   if(queue.length)storage.setItem(ACCOUNT_QUEUE_KEY,JSON.stringify({queue}));else storage.removeItem(ACCOUNT_QUEUE_KEY);
 }
-export function queueLock(task){
-  return globalThis.navigator?.locks?navigator.locks.request('rf.accounts.queue',task):Promise.resolve().then(task);
+export async function queueLock(task){
+  if(!globalThis.navigator?.locks)return Promise.resolve().then(task);
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),5000);
+  try{return await navigator.locks.request('rf.accounts.queue',{signal:controller.signal},task);}
+  catch(error){if(error.name==='AbortError')throw new Error('Another app tab is blocking local saving. Close that tab and try again. Nothing was added to the upload queue.');throw error;}
+  finally{clearTimeout(timer);}
 }
 export function uploadLock(task){
   return globalThis.navigator?.locks?navigator.locks.request('rf.accounts.upload',{ifAvailable:true},lock=>lock?task():false):task();

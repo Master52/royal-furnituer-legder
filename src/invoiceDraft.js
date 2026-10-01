@@ -1,8 +1,9 @@
 import { blankInvoice, blankItem } from './accounts.js';
+import {blankMeasurement} from './measurements.js';
 
 export const invoiceDraftKey=endpoint=>`rf.invoiceDraft.${endpoint}`;
 export function hasInvoiceDraft(draft){
-  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.items.some(item=>item.description.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0));
+  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.items.some(item=>item.description.trim()||item.itemNote?.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0||Boolean(item.billingUnit&&item.billingUnit!=='nos')||Boolean(item.measurements?.length)));
 }
 export function readInvoiceDraft(storage,endpoint){
   const key=invoiceDraftKey(endpoint);
@@ -21,10 +22,16 @@ export function readInvoiceDraft(storage,endpoint){
     draft.items=saved.items.map(savedItem=>{
       if(!savedItem||typeof savedItem!=='object')throw new Error('Invalid item');
       const item=blankItem();
-      for(const field of Object.keys(item)){
+      for(const field of Object.keys(item).filter(field=>field!=='measurements'&&field!=='grouped')){
         if(savedItem[field]!=null&&!['string','number'].includes(typeof savedItem[field]))throw new Error('Invalid item field');
         if(savedItem[field]!=null)item[field]=String(savedItem[field]);
       }
+      if(!['','nos','sqft','rft','kg'].includes(item.billingUnit)||!['feet','inches',''].includes(item.measurementUnit)||!['quantity','dimensions','perimeter'].includes(item.measurementMode))throw new Error('Invalid measurement unit');
+      if(savedItem.measurements!=null){if(!Array.isArray(savedItem.measurements)||savedItem.measurements.length>100)throw new Error('Invalid measurements');item.measurements=savedItem.measurements.map(row=>{if(!row||typeof row!=='object')throw new Error('Invalid size row');return Object.fromEntries(['description','length','width','quantity','pieces'].map(key=>{const value=row[key]??(key==='pieces'||key==='quantity'?'1':'');if(!['string','number'].includes(typeof value))throw new Error('Invalid size field');return [key,String(value)];}));});}
+      if(savedItem.grouped!=null&&typeof savedItem.grouped!=='boolean')throw new Error('Invalid grouping option');
+      item.grouped=Boolean(savedItem.grouped||item.measurements.length>1||(!['sqft','rft'].includes(item.billingUnit)&&item.measurements.length>0));
+      if(item.grouped&&!item.billingUnit)item.billingUnit='nos';
+      if((item.grouped||['sqft','rft'].includes(item.billingUnit))&&!item.measurements.length)item.measurements=[{...blankMeasurement(),quantity:item.quantity}];
       return item;
     });
     return {draft,error:''};

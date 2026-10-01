@@ -1,3 +1,4 @@
+import {scaledInput,draftMeasurements,billingQuantity_,billingPrice_,measurementDraftFromItem} from './measurements.js';
 import { localNow, transactionIntegrityIssue, duplicateTransactionIds, SHOP_TIMEZONE } from './ledger.js';
 
 export const ACCOUNTS_VERSION = '1.8.0';
@@ -11,7 +12,7 @@ export function minor(value, label = 'amount') {
 export function validDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
-export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '' });
+export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '',itemNote:'',grouped:false,billingUnit:'',measurementUnit:'feet',measurementMode:'quantity',measurements:[] });
 export const blankInvoice = () => ({ partyId: '', type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
 export function makeParty(form, id = crypto.randomUUID()) {
   const name = form.name.trim();
@@ -28,22 +29,24 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
   let totalMinor = 0, costTotalMinor = 0, completeCost = true;
   const items = form.items.map((item, index) => {
     const description = item.description.trim();
+    if(typeof (item.itemNote??'')!=='string'||(item.itemNote??'').trim().length>500)throw new Error(`Item ${index+1} description must be at most 500 characters.`);
+    const itemNote=(item.itemNote||'').trim();
     if (!description || description.length > 300) throw new Error(`Enter a description for item ${index + 1}.`);
-    const quantityMilli = Math.round(Number(item.quantity) * 1000);
-    if (!/^\d+(\.\d{1,3})?$/.test(String(item.quantity)) || !Number.isSafeInteger(quantityMilli) || quantityMilli <= 0 || quantityMilli > 1000000000) throw new Error('Quantity must be positive with at most three decimal places.');
+    const measurements=draftMeasurements(item),unit=item.billingUnit||'';
+    const quantity=billingQuantity_({...item,quantityMilli:measurements.length?0:scaledInput(item.quantity,'Quantity'),measurements});
+    const quantityMilli=quantity.quantityMilli;
     const rateMinor = minor(item.rate, 'rate'), discountMinor = minor(item.discount || '0', 'line discount');
-    if (!Number.isSafeInteger(rateMinor * quantityMilli)) throw new Error('Item amount is too large.');
-    const lineTotalMinor = Math.round(rateMinor * quantityMilli / 1000) - discountMinor;
+    const lineTotalMinor = billingPrice_(rateMinor,quantity) - discountMinor;
     if (lineTotalMinor < 0 || lineTotalMinor > MAX_MINOR) throw new Error('Line discount cannot exceed the item value.');
-    const costMinor = form.type === 'sale' && item.cost !== '' ? minor(item.cost, 'unit cost') : null;
-    if (costMinor !== null && !Number.isSafeInteger(costMinor * quantityMilli)) throw new Error('Item cost is too large.');
-    const lineCostMinor = costMinor === null ? null : Math.round(costMinor * quantityMilli / 1000);
+    const costMinor = form.type === 'sale' && item.cost !== '' && item.cost!=null ? minor(item.cost, 'unit cost') : null;
+    const lineCostMinor = costMinor === null ? null : billingPrice_(costMinor,quantity);
     totalMinor += lineTotalMinor;
     if (lineCostMinor === null) completeCost = false; else costTotalMinor += lineCostMinor;
-    return { id: `${id}-${index + 1}`, invoiceId: id, description, quantityMilli, rateMinor, discountMinor, lineTotalMinor, costMinor, lineCostMinor };
+    return { id: `${id}-${index + 1}`, invoiceId: id, description,...(itemNote?{itemNote}:{}), quantityMilli, rateMinor, discountMinor, lineTotalMinor, costMinor, lineCostMinor,...(unit?{billingUnit:unit,measurementUnit:['sqft','rft'].includes(unit)?item.measurementUnit:'',measurementMode:item.measurementMode||'quantity',measurementCount:measurements.length,measurements}: {}) };
   });
+  if(items.reduce((sum,item)=>sum+(item.measurements?.length||0),0)>1000)throw new Error('An invoice supports at most 1,000 measurement rows.');
   if (totalMinor <= 0 || totalMinor > MAX_MINOR || costTotalMinor > MAX_MINOR) throw new Error('Invoice total must be positive and within the supported amount limit.');
-  return { id, schemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
+  return { id, schemaVersion: 1, measurementSchemaVersion: 1, itemDescriptionSchemaVersion: 1, partyId: form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
 }
 
 export function findParties(parties, query, limit = 8) {
@@ -79,7 +82,7 @@ export function historyInvoices(invoices, start, end, category = '', query = '')
   const search = query.trim().toLowerCase();
   return invoices.filter(invoice => invoice.invoiceDate >= start && invoice.invoiceDate <= end
     && (!category || category === (invoice.type === 'sale' ? 'Sale' : 'Purchase'))
-    && (!search || [invoice.invoiceNumber, invoice.partyName, invoice.notes,invoice.challanNumber,invoice.itemSearch, ...(invoice.items || []).map(item => item.description)].join(' ').toLowerCase().includes(search)))
+    && (!search || [invoice.invoiceNumber, invoice.partyName, invoice.notes,invoice.challanNumber,invoice.itemSearch, ...(invoice.items || []).flatMap(item => [item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)])].join(' ').toLowerCase().includes(search)))
     .sort((a,b) => b.invoiceDate.localeCompare(a.invoiceDate) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || b.id.localeCompare(a.id));
 }
 export function partyStatement(party, invoices, transactions, start = '0000-01-01', end = '9999-12-31', notes = []) {
@@ -149,7 +152,7 @@ export function accountBalances(parties,invoices,transactions,notes=[]){
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }
 export function invoiceDraftFromRecord(saved){
-  return {...blankInvoice(),partyId:saved.partyId,type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2)}))};
+  return {...blankInvoice(),partyId:saved.partyId,type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
 }
 
 

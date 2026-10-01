@@ -157,3 +157,53 @@
 [data-theme=dark] .bulk-selection-bar{background:#26382c}
 @media(max-width:760px){.activity-table tr:has(.selection-column){grid-template-columns:22px minmax(0,1fr) auto;grid-template-areas:"select party amount" "select type date" "select reference status" "select actions actions"}.activity-table .selection-column{grid-area:select}.bulk-selection-bar>div{flex-wrap:wrap}}
 @media print{.selection-column,.bulk-selection-bar{display:none!important}}
+
+/* Compact invoice fields share one baseline; measured totals occupy a right-hand column. */
+.invoice-pos-items .invoice-item-editor{display:block;padding:7px 0;margin:0}
+.invoice-item-fields{display:grid;grid-template-columns:minmax(140px,1.8fr) repeat(6,minmax(60px,1fr)) auto;gap:8px;align-items:end}
+.invoice-item-fields[data-type=purchase]{grid-template-columns:minmax(140px,1.8fr) repeat(5,minmax(60px,1fr)) auto}
+.invoice-item-fields[data-grouped=true]{grid-template-columns:minmax(140px,1.8fr) repeat(5,minmax(60px,1fr)) auto}
+.invoice-item-fields[data-grouped=true][data-type=purchase]{grid-template-columns:minmax(140px,1.8fr) repeat(4,minmax(60px,1fr)) auto}
+.account-invoice-dialog .invoice-item-fields>label,.account-invoice-dialog .measurement-row>label,.account-invoice-dialog .measurement-options label{margin:0;min-width:0}
+.account-invoice-dialog .invoice-item-fields>button{margin:0;min-height:30px;padding:5px 7px;font-size:10px}
+.account-invoice-dialog .invoice-item-fields input,.account-invoice-dialog .invoice-item-fields select{min-height:30px;padding:5px 6px;font-size:12px}
+.item-measurements{display:grid;grid-template-columns:minmax(0,1fr) 135px;gap:10px;padding:8px;margin-top:6px;border:1px solid #dce5dc;border-radius:8px;background:#f8faf9}
+.measurement-entry{min-width:0}.measurement-options{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}.measurement-options label{max-width:240px;flex:1;min-width:100px}
+.measurement-row{display:flex;gap:5px;align-items:end;padding:3px 0}.measurement-row>label{flex:1;font-size:11px}.measurement-row>.measurement-description{flex:1.6}.measurement-row button{margin:0!important;padding:5px 6px;font-size:10px;min-height:30px}
+.account-invoice-dialog .measurement-row input,.account-invoice-dialog .measurement-options select{padding:5px 6px;min-height:30px;font-size:12px}
+.measurement-entry>button{margin:5px 0 0;padding:7px 9px;font-size:11px}.measurement-entry>.help{display:block;margin:6px 0 0;font-size:11px}
+.measurement-total{display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right;border-left:1px solid #dce5dc;padding-left:12px;align-self:start;margin:0;overflow-wrap:anywhere}
+.measurement-total>span{font-size:11px;color:#617463}.measurement-total>strong{font-size:13px}.measurement-total>.measurement-amount{font-size:18px}.measurement-total small{font-size:10px;line-height:1.5}
+.measurement-breakdown{display:block;margin-top:5px;font-size:11px;white-space:normal}.measurement-print-help{font-size:10px}
+.invoice-view-profit{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;margin:12px 0}.invoice-view-profit>div{display:flex;align-items:center;gap:10px}.invoice-view-profit strong{font-size:18px}.invoice-view-profit span{font-size:12px}
+[data-theme=dark] .item-measurements{background:#18271e;border-color:#3b5141}[data-theme=dark] .measurement-total{border-color:#3b5141}[data-theme=dark] .measurement-total>span{color:#b5c5af}
+@media(max-width:760px){
+ .invoice-item-fields,.invoice-item-fields[data-type=purchase],.invoice-item-fields[data-grouped=true],.invoice-item-fields[data-grouped=true][data-type=purchase]{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .invoice-item-fields>label:first-child{grid-column:1/-1}.account-invoice-dialog .invoice-item-fields input,.account-invoice-dialog .invoice-item-fields select,.account-invoice-dialog .measurement-row input,.account-invoice-dialog .measurement-options select{font-size:16px}
+ .item-measurements{display:flex;flex-direction:column-reverse;gap:8px}.measurement-total{border-left:0;padding:0;align-self:flex-end}.measurement-total small{display:none}.measurement-total>.measurement-amount{font-size:17px}
+ .measurement-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:8px 0;border-top:1px solid #dce5dc}.measurement-row>.measurement-description{grid-column:1/-1}.measurement-row>button{justify-self:start}
+}
+@media print{.invoice-view-profit{display:none!important}}
+
+/* Keep the document toolbar and header as compact as the item rows. */
+.account-invoice-dialog{padding:16px}
+.account-invoice-dialog>.account-dialog-heading{margin-bottom:10px}.account-invoice-dialog .account-dialog-heading h2{font-size:18px}
+.account-invoice-dialog .document-types{margin-bottom:8px!important}.account-invoice-dialog .document-types legend{font-size:10px;margin-bottom:4px}.account-invoice-dialog .document-types>div{gap:6px}
+.account-invoice-dialog .document-types button{padding:6px 8px;min-height:30px;flex-direction:row;align-items:center;justify-content:space-between;gap:5px;font-size:11px}
+.account-invoice-dialog .document-types kbd{font-size:9px}.account-invoice-dialog .account-fields{gap:8px;margin:8px 0}
+.account-invoice-dialog .invoice-header-fields{grid-template-columns:2fr 1fr 1fr}.account-invoice-dialog .invoice-header-fields label{margin:3px 0;font-size:11px}
+.account-invoice-dialog .invoice-header-fields input{padding:5px 7px;min-height:32px;font-size:12px;margin-top:3px}
+.account-invoice-dialog .invoice-pos-items h3{margin:6px 0;font-size:13px}.account-invoice-dialog textarea{min-height:36px;height:36px;padding:6px 8px}
+.account-invoice-dialog .invoice-pos-items>label{margin:6px 0;font-size:11px}.account-invoice-dialog .invoice-pos-items>button{padding:6px 9px;font-size:11px}
+.account-invoice-dialog .invoice-item-fields>label{font-size:10px}.item-grouping-control{margin:5px 0 0}
+.account-invoice-dialog .item-grouping-control label{display:flex;align-items:center;gap:6px;margin:0;font-size:10px;width:fit-content;cursor:pointer}
+.account-invoice-dialog .item-grouping-control input{display:inline-block;width:14px;height:14px;min-height:14px;padding:0;margin:0;accent-color:#315d42}
+.account-invoice-dialog .invoice-shortcuts{margin:7px 0;font-size:11px}.account-invoice-dialog .invoice-submit-bar{margin-top:7px;padding-top:8px}.account-invoice-dialog .invoice-submit-total>strong{font-size:19px}
+@media(max-width:760px){
+ .account-invoice-dialog .invoice-header-fields{grid-template-columns:1fr 1fr}.account-invoice-dialog .invoice-header-fields>.invoice-party-picker{grid-column:1/-1}
+ .account-invoice-dialog .invoice-header-fields input,.account-invoice-dialog .invoice-item-fields input,.account-invoice-dialog .invoice-item-fields select,.account-invoice-dialog .measurement-row input,.account-invoice-dialog .measurement-options select{font-size:16px;min-height:34px}
+ .account-invoice-dialog .document-types kbd{display:none}.account-invoice-dialog .measurement-row{padding:5px 0}
+}
+
+.invoice-item-note{display:block;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:4px;font-size:11px}
+@media(max-width:760px){.invoice-item-fields>label:last-of-type{grid-column:1/-1}}

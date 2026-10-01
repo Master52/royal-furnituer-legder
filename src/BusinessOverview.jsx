@@ -15,7 +15,7 @@ export default function BusinessOverview({accounts, transactions, range}) {
             ['To receive',invalid?null:receive,'Outstanding party balances · all dates'],['To pay',invalid?null:pay,'Outstanding party balances · all dates'],
       ['Gross profit',showProfit?figures.grossProfit:'hidden',figures.missingCosts?'Partial · only records with known costs':'Net sales minus recorded sales costs'],
       ['Profit after recorded expenses',showProfit?figures.operatingResult:'hidden','Gross profit less recorded operating expenses']
-    ].map(([label,value,help])=><article key={label}><span>{label}</span><strong>{value==='hidden'?'••••':value===null?'Unavailable':money(value)}</strong><small>{help}</small></article>)}</div>
+    ].map(([label,value,help])=><article data-tone={label==='Net invoiced sales'||label==='To receive'?'sale':label==='Net invoiced purchases'||label==='To pay'?'purchase':undefined} key={label}><span>{label}</span><strong>{value==='hidden'?'••••':value===null?'Unavailable':money(value)}</strong><small>{help}</small></article>)}</div>
     {figures.missingCosts>0&&<p className="help">{figures.missingCosts} sales invoice/note record(s) have unknown costs. Gross profit is partial; profit after expenses is unavailable until those costs are recorded.</p>}
     <details className="business-help"><summary>How these totals work</summary><p>Sales and purchases are invoice values after correction notes. To Receive/To Pay are party balances across all dates. Profit after expenses subtracts {money(figures.expenses)} in Expense/Bhara payments, less refunds. Payments and invoice values are separate; pending uploads are excluded.</p></details>
   </section>;

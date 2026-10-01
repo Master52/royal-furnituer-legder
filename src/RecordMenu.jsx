@@ -8,6 +8,6 @@ export default function RecordMenu({label,actions}){
   },[]);
   return <details className="record-menu" ref={ref} onClick={event=>event.stopPropagation()} onKeyDown={event=>{if(event.key==='Escape'){ref.current.removeAttribute('open');ref.current.querySelector('summary').focus();event.stopPropagation();}}}>
     <summary aria-label={`More actions for ${label}`} title="More actions">⋮</summary>
-    <div>{actions.map(action=><button type="button" key={action.label} disabled={action.disabled} title={action.reason||undefined} onClick={()=>{ref.current.removeAttribute('open');action.onClick();}}>{action.label}</button>)}</div>
+    <div>{actions.map(action=><button type="button" className={/^Delete\b/.test(action.label)?'danger-action':undefined} key={action.label} disabled={action.disabled} title={action.reason||undefined} onClick={()=>{ref.current.removeAttribute('open');action.onClick();}}>{action.label}</button>)}</div>
   </details>;
 }

@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue } from '../src/accountQueue.js';
+import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock } from '../src/accountQueue.js';
 import { hasInvoiceDraft, invoiceDraftKey, readInvoiceDraft } from '../src/invoiceDraft.js';
 import { blankInvoice } from '../src/accounts.js';
 
 const storage=()=>{const data=new Map();return {data,getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};};
 const operation={endpoint:'https://test/exec',action:'createParty',payload:{id:'party-001',name:'Example'}};
+test('the default NOS unit alone does not create an empty resumable draft',()=>{
+ const draft=blankInvoice();draft.items[0].billingUnit='nos';assert.equal(hasInvoiceDraft(draft),false);
+ draft.items[0].description='WINDOW';assert.equal(hasInvoiceDraft(draft),true);
+});
 
 test('durable queue accepts old single requests and ordered dependent uploads without changing payloads',()=>{
   const store=storage();assert.deepEqual(readAccountQueue(store),[]);
@@ -50,4 +54,11 @@ test('resumable drafts include typed parties and edits, but fresh and cleared in
   assert.equal(hasInvoiceDraft({...draft,partyQuery:'   ',notes:' '}),false);
   const store=storage();store.setItem(invoiceDraftKey('A'),JSON.stringify({...draft,partyQuery:'Unselected party'}));
   assert.equal(readInvoiceDraft(store,'A').draft.partyQuery,'Unselected party');
+});
+
+
+test('queue locks abort blocked saves with a recoverable message and never run the mutation',async()=>{
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');let ran=false;
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:{request:async(name,options,task)=>{assert.equal(name,'rf.accounts.queue');assert.ok(options.signal instanceof AbortSignal);throw Object.assign(new Error('Lock aborted'),{name:'AbortError'});}}}});
+  try{await assert.rejects(queueLock(()=>ran=true),/Another app tab is blocking local saving/);assert.equal(ran,false);}finally{if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;}
 });

@@ -112,7 +112,7 @@ export default function useAccounts(endpoint, enabled) {
       const latest=snapshotRef.current;
       const byId=new Map(records.map(record=>[record.id,record]));
       const latestById=new Map(latest.data.invoices.map(record=>[record.id,record]));
-      if(records.some(record=>{const base=latestById.get(record.id);return !base||Number(base.revision||0)!==Number(record.revision||0)||base.status==='deleted'||lastAppliedRead.current!==appliedBeforeDetails&&base.status!==record.status;}))throw new Error('Invoice changed while loading. Refresh and open it again.');
+      if(records.some(record=>{const base=latestById.get(record.id);return !base||base!==currentById.get(record.id)||Number(base.revision||0)!==Number(record.revision||0)||base.status==='deleted'||lastAppliedRead.current!==appliedBeforeDetails&&base.status!==record.status;}))throw new Error('Invoice changed while loading. Refresh and open it again.');
       const next={...latest,data:{...latest.data,invoices:latest.data.invoices.map(base=>byId.has(base.id)?{...byId.get(base.id),_summary:false}:base)}};
       lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(target,next.data,next.savedAt).catch(()=>{});
       const nextById=new Map(next.data.invoices.map(record=>[record.id,record]));
@@ -132,7 +132,7 @@ export default function useAccounts(endpoint, enabled) {
     const previous=(current.data[collection]||[]).find(item=>item.id===record.id);
     const value={...previous,...record};
     if(collection==='invoices'&&!Array.isArray(value.items))return false;
-    if(collection==='invoices'){value._summary=false;value.itemSearch=value.items.map(item=>item.description).join(' ');}
+    if(collection==='invoices'){value._summary=false;value.itemSearch=value.items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ');}
     const next={...current,data:{...current.data,[collection]:[...(current.data[collection]||[]).filter(item=>item.id!==value.id),value]}};
     lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);
     saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
@@ -178,7 +178,7 @@ export default function useAccounts(endpoint, enabled) {
     if(!canQueue)return false;
     const operation={endpoint,action,payload};
     try{await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
-    catch{setError('Browser storage is unavailable. The record was not queued.');return false;}
+    catch(error){setError(error.message||'Browser storage is unavailable. The record was not queued.');return false;}
     if(!pending){setError('');setRejected(false);}
     return true;
   }

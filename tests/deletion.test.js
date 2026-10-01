@@ -33,7 +33,7 @@ test('stale invoice revisions and changed note sets cannot be deleted using an o
  const stale=deleteRequest(invoice,[note]);backend.post('cancelInvoiceNote',{id:note.id,reason:'Mistake',_expectedRevision:0});assert.equal(backend.post('deleteInvoice',stale).code,'EDIT_CONFLICT');
  assert.equal(backend.post('listAccounts',{}).invoices[0].status,'issued');
 });
-test('empty parties can be deleted but active invoices, payments and opening balances are protected',()=>{
+test('empty parties can be deleted; active records are protected and opening balances require explicit confirmation',()=>{
  const {backend,invoice}=fixture();const removeParty={id:party.id,_expectedRevision:0};assert.equal(backend.post('deleteParty',removeParty).ok,false);
  backend.post('deleteInvoice',deleteRequest(invoice));backend.post('create',receipt());assert.equal(backend.post('deleteParty',removeParty).ok,false);
  backend.post('delete',{id:receipt().id});assert.equal(backend.post('deleteParty',removeParty).ok,true);
@@ -59,4 +59,21 @@ test('party payment keeps party context but starts with no selected direction, c
  assert.throws(()=>makeTransaction({...form,amount:'10'}),/Choose a valid category, payment method and direction/);
  for(const key of ['direction','category','method'])assert.equal(hasDraft({...form,[key]:key==='direction'?'in':key==='category'?'Sale':'Cash'}),true);
  const payment=makeTransaction({...form,direction:'out',category:'Sale',method:'Cash',amount:'10'});assert.equal(payment.direction,'out');assert.equal(payment.category,'Sale');assert.equal(payment.partyId,party.id);
+});
+
+
+test('opening-only party deletion retains receivables/payables, creates no payment, and validates confirmation',()=>{
+ for(const openingBalanceMinor of [500000,-700000]){
+  const backend=accountBackend(),record={...party,openingBalanceMinor};backend.post('createParty',record);
+  const tab=backend.tabs.get('Parties');tab.data[0].push('futureColumn');tab.data[1].push('preserved');
+  const request={id:party.id,_expectedRevision:0,_expectedOpeningBalanceMinor:openingBalanceMinor};
+  assert.equal(backend.post('deleteParty',{...request,_expectedOpeningBalanceMinor:0}).code,'EDIT_CONFLICT');
+  assert.equal(backend.post('deleteParty',request).ok,true);assert.equal(backend.post('deleteParty',request).ok,true);
+  const data=backend.post('listAccounts',{});assert.equal(data.ok,true);assert.equal(data.transactions.length,0);assert.equal(data.parties[0].openingBalanceMinor,openingBalanceMinor);assert.ok(data.parties[0].archivedAt);assert.equal(data.parties[0].revision,1);assert.equal(tab.data.length,2);assert.equal(tab.data[1].at(-1),'preserved');
+  assert.deepEqual(accountBalances(data.parties.filter(p=>!p.archivedAt),data.invoices,data.transactions,data.notes),[]);
+ }
+});
+test('confirming an opening balance does not bypass active invoice or payment protections',()=>{
+ const {backend}=fixture();assert.equal(backend.post('deleteParty',{id:party.id,_expectedRevision:0,_expectedOpeningBalanceMinor:0}).ok,false);
+ const other={...party,id:'party-opening-payment-01',openingBalanceMinor:500};backend.post('createParty',other);backend.post('create',{...receipt(),partyId:other.id});assert.equal(backend.post('deleteParty',{id:other.id,_expectedRevision:0,_expectedOpeningBalanceMinor:500}).ok,false);
 });
