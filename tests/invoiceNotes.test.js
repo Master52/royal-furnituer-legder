@@ -78,7 +78,8 @@ test('dashboard distinguishes invoice value, payments, operating expenses and in
  const {invoice}=fixture();
  const payment=(category,direction,amount,id)=>makeTransaction({category,direction,amount,party:'Test',method:'Cash',dateTime:'2026-09-02T12:00'},id);
  const rows=[payment('Sale','in','40','sale-dashboard-00000001'),payment('Purchase','out','50','purchase-dashboard-0001'),payment('Expense','out','5','expense-dashboard-00001'),payment('Bhara','out','3','bhara-dashboard-0000001'),payment('Expense','in','1','refund-dashboard-000001')];
- const figures=businessFigures([invoice],[],rows,['2026-09-01','2026-09-30']);assert.equal(figures.sales,10000);assert.equal(figures.collected,4100);assert.equal(figures.paid,5800);assert.equal(figures.expenses,700);assert.equal(figures.operatingResult,3300);
+ const figures=businessFigures([invoice],[],rows,['2026-09-01','2026-09-30']);assert.equal(figures.sales,10000);assert.equal(figures.collected,4100);assert.equal(figures.paid,5800);assert.equal(figures.expenses,400);assert.equal(figures.operatingResult,3600);
+ const bharaRefund=payment('Bhara','in','2','bhara-refund-0000000001');assert.equal(businessFigures([invoice],[],[...rows,bharaRefund],['2026-09-01','2026-09-30']).operatingResult,3600);
  assert.equal(businessFigures([{...invoice,costTotalMinor:null}],[],rows,['2026-09-01','2026-09-30']).operatingResult,null);
 });
 

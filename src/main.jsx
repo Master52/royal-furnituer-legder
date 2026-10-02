@@ -58,6 +58,7 @@ function App() {
   const [rows, setRows] = useState([]);
   const [cacheSavedAt,setCacheSavedAt]=useState('');
   const [refreshing,setRefreshing]=useState(false);
+  const [refreshReadError,setRefreshReadError]=useState('');
   const [connectionInfo, setConnectionInfo] = useState(() => { const saved = read('rf.connectionInfo', null); return saved?.endpoint === endpoint ? saved : null; });
   const [outbox,setOutbox]=useState(initialOutbox);
   const outboxRef=useRef(outbox);
@@ -195,7 +196,7 @@ function App() {
   }
   async function refresh(target = endpoint,{reuseFresh=false}={}) {
     if (!target || refreshInFlight.current) return;
-    refreshInFlight.current=true;setRefreshing(true);setError('');
+    refreshInFlight.current=true;setRefreshing(true);setRefreshReadError('');
     try {
       const result=target===endpoint&&accountsEnabled?await (reuseFresh?accounts.refreshIfStale():accounts.reload()):await request(target);
       if(!result)throw new Error('Google Sheets could not be refreshed.');
@@ -204,13 +205,13 @@ function App() {
       setRows(overlayOutbox(result.transactions,outboxRef.current,target));setCacheSavedAt(savedAt);rememberInfo(target,result);setSynced(true);setNotice('Up to date with Google Sheets.');
       saveTransactionCache(target,result.transactions,savedAt).catch(()=>{});
     }
-    catch (e) { if(target===endpointRef.current){setError(e.message);setSynced(false);} }
+    catch (e) { if(target===endpointRef.current){setRefreshReadError(e.message);setSynced(false);} }
     finally { refreshInFlight.current=false;setRefreshing(false); }
   }
   useEffect(()=>{
     if(!accounts.loaded)return;
     setRows(overlayOutbox(accounts.transactions,outboxRef.current,endpoint));setCacheSavedAt(accounts.checkedAt||'');
-    if(!accounts.cached){setSynced(true);saveTransactionCache(endpoint,accounts.transactions,accounts.checkedAt).catch(()=>{});}
+    if(!accounts.cached){setSynced(true);setRefreshReadError('');saveTransactionCache(endpoint,accounts.transactions,accounts.checkedAt).catch(()=>{});}
   },[accounts.loaded,accounts.transactions,accounts.checkedAt,accounts.cached,endpoint]);
   useEffect(() => {
     let cancelled = false;
@@ -407,7 +408,7 @@ function App() {
       let linkSaved = true;
       try { await saveEndpoint(validated); } catch { linkSaved = false; }
       if (validated !== endpoint) applyConnectionPreferences(validated);
-      setEndpoint(validated); setUrl(validated); setRows(result.transactions); rememberInfo(validated, result); setSynced(true);
+      setRefreshReadError('');setEndpoint(validated); setUrl(validated); setRows(result.transactions); rememberInfo(validated, result); setSynced(true);
       setNotice(linkSaved ? 'Google Sheets connected. The link is saved in this browser.' : 'Google Sheets connected for this session, but browser storage blocked saving the link. Allow site storage and reconnect.');
       setModal('');
     } catch (e) { setError(e.message); }
@@ -449,16 +450,18 @@ function App() {
     setRows(previous=>applyQueuedOperation(previous,operation));setNotice('Deleted on this device. Uploading deletion to Google Sheets…');
   }
   const update = (key, value) => setForm(previous => ({ ...previous, [key]: value }));
-  if (!connectionRestored) return <main className="startup-loading" role="status">Restoring your saved Google Sheets connection…</main>;
+  const invocation=<div className="app-invocation" lang="ar" dir="rtl">بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ</div>;
+  if (!connectionRestored) return <>{invocation}<main className="startup-loading" role="status">Restoring your saved Google Sheets connection…</main></>;
   return <>
-    <aside className="sidebar"><a className="brand" href="#"><img className="brand-logo" src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History']].map(([key,icon,label])=><button key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon">RF</div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
+    {invocation}
+    <aside className="sidebar"><div className="brand-invocation" lang="ar" dir="rtl">یاحسین</div><a className="brand" href="#"><img className="brand-logo" src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History']].map(([key,icon,label])=><button key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon">RF</div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
     <main><header className="topbar"><button className="outline" onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>⚙ Settings</button>{installPrompt && <button className="outline install-button" onClick={installApp}>＋ Install app</button>}<span className={`connection ${synced ? 'connected' : ''}`}><i/> {refreshing?'Updating from Sheets…':synced ? 'Sheets connected' : endpoint ? 'Connection not verified' : 'Sheets not connected'}</span></header>
       {(view==='history'||view==='dashboard')&&<section className="heading"><div><h1>{view==='history'?'History':'Dashboard'}</h1></div>{<div className="dashboard-actions"><button className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ New Invoice / Note <kbd>Alt + I</kbd></button><button className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
       {!endpoint && <div className="setup-banner"><div><strong>Let’s connect your ledger.</strong><span>Connect Google Sheets to start recording payments.</span></div><button onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>Connect Sheets ↗</button></div>}
-      <div aria-live="polite">{notice && <p className="notice">{notice}</p>}{error && !modal && <p className="error" role="alert">{error}</p>}</div>
-      {cacheSavedAt && (refreshing || (error && !synced)) && <div className={`cache-status ${error&&!synced?'cache-stale':''}`} role="status" aria-live="polite">{refreshing&&<i className="upload-spinner" aria-hidden="true"/>}<span><strong>{refreshing?'Showing saved transactions while checking Google Sheets.':'Showing saved transactions; Google Sheets could not be refreshed.'}</strong><small>Last saved snapshot: {new Date(cacheSavedAt).toLocaleString()}</small></span>{error&&!synced&&<button onClick={()=>refresh()} disabled={refreshing}>Retry refresh</button>}</div>}
+      <div aria-live="polite">{notice && <p className="notice">{notice}</p>}{error && !modal && <p className="error" role="alert">{error}</p>}{refreshReadError && !modal && <p className="error" role="alert">{refreshReadError}</p>}</div>
+      {cacheSavedAt && (refreshing || ((refreshReadError || error) && !synced)) && <div className={`cache-status ${(refreshReadError||error)&&!synced?'cache-stale':''}`} role="status" aria-live="polite">{refreshing&&<i className="upload-spinner" aria-hidden="true"/>}<span><strong>{refreshing?'Showing saved transactions while checking Google Sheets.':'Showing saved transactions; Google Sheets could not be refreshed.'}</strong><small>Last saved snapshot: {new Date(cacheSavedAt).toLocaleString()}</small></span>{(refreshReadError||error)&&!synced&&<button onClick={()=>refresh()} disabled={refreshing}>Retry refresh</button>}</div>}
       {integrityIssueCount>0 && <p className="integrity-warning" role="alert">{integrityIssueCount} Sheet record{integrityIssueCount===1?' has':'s have'} invalid or inconsistent transaction data. Affected records are excluded from totals; review those rows in Transactions before using the report.</p>}
-      <SyncStatus endpoint={endpoint} accounts={accounts} outbox={outbox} synced={synced} refreshing={refreshing} readError={error&&!synced?error:''} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')}/>
+      <SyncStatus endpoint={endpoint} accounts={accounts} outbox={outbox} synced={synced} refreshing={refreshing} readError={refreshReadError||(error&&!synced?error:'')} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')}/>
       {!accounts.pending&&accounts.lastInvoice&&<p className="notice" role="status">Invoice {accounts.lastInvoice.number} saved to Google Sheets. <button className="outline" onClick={()=>setInvoiceOpenRequest({id:accounts.lastInvoice.id,request:Date.now()})}>View invoice</button></p>}
       {transactionDetail&&<TransactionDetails preferences={preferences} initialAction={transactionSelection?.action} onPreparePrint={async()=>{const fresh=accountsEnabled?await accounts.reload({fresh:true}):await request(endpoint);const record=fresh?.transactions.find(row=>row.id===transactionDetail.id);if(!record)throw new Error('Refresh and confirm this payment before printing.');return record;}} onEdit={()=>{setTransactionSelection(null);beginEdit(transactionDetail);}} onDelete={()=>{setTransactionSelection(null);deleteTransaction(transactionDetail);}} transaction={transactionDetail} duplicate={duplicateIds.has(transactionDetail.id)} queued={outbox.filter(item=>item.id===transactionDetail.id).at(-1)} onClose={()=>setTransactionSelection(null)}/>}
       {paymentOpen&&<AccountDialog className="payment-dialog" title={editing?'Edit payment':form.recordType==='transfer'?'Cash ↔ Online exchange':form.recordType==='adjustment'?'Adjust a balance':form.partyId?`${form.direction==='in'?'Receive payment':form.direction==='out'?'Make payment':'Record payment'} · ${form.party}`:'Record Payment'} busy={busy} onClose={closePayment}>

@@ -8,7 +8,7 @@ export function businessFigures(invoices, notes, transactions, range) {
     if(payment.deletedAt||payment.transactionDate<range[0]||payment.transactionDate>range[1]||duplicates.has(payment.id)||transactionIntegrityIssue(payment)||payment.recordType&&payment.recordType!=='payment')continue;
     const amount=Number(payment.amountMinor);
     if(payment.direction==='in')collected+=amount;else paid+=amount;
-    if(['Expense','Bhara'].includes(payment.category))expenses+=amount*(payment.direction==='out'?1:-1);
+    if(payment.category==='Expense')expenses+=amount*(payment.direction==='out'?1:-1);
   }
   return {...invoice,collected,paid,expenses,operatingResult:invoice.missingCosts?null:invoice.grossProfit-expenses};
 }

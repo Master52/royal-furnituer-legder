@@ -232,7 +232,7 @@ test('direct backend access lists records and still excludes deleted rows',()=>{
 test('client reads and writes without Firebase credentials',async()=>{
   const originalFetch=globalThis.fetch;
   const calls=[];
-  globalThis.fetch=async(url,options)=>{calls.push(options);return {ok:true,json:async()=>({ok:true,transactions:[]})};};
+  globalThis.fetch=async(url,options)=>{calls.push(options);return new Response(JSON.stringify({ok:true,transactions:[]}));};
   try {
     await request('https://script.google.com/macros/s/test/exec');
     await request('https://script.google.com/macros/s/test/exec',{id},'delete');
@@ -272,9 +272,9 @@ test('Apps Script appends settlement columns and validates change, exchange and 
 test('connection rejects successful responses without a ledger but supports older unversioned scripts',async()=>{
   const originalFetch=globalThis.fetch;
   try {
-    globalThis.fetch=async()=>({ok:true,json:async()=>({ok:true,message:'not a ledger'})});
+    globalThis.fetch=async()=>new Response(JSON.stringify({ok:true,message:'not a ledger'}));
     await assert.rejects(request('https://script.google.com/macros/s/test/exec'),/did not return a ledger/);
-    globalThis.fetch=async()=>({ok:true,json:async()=>({ok:true,transactions:[]})});
+    globalThis.fetch=async()=>new Response(JSON.stringify({ok:true,transactions:[]}));
     assert.deepEqual((await request('https://script.google.com/macros/s/test/exec')).transactions,[]);
   } finally {globalThis.fetch=originalFetch;}
 });

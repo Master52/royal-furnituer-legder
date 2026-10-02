@@ -125,6 +125,17 @@ export default function useAccounts(endpoint, enabled) {
     if(!current || current.endpoint!==endpoint || current.cached || Date.now()-Date.parse(current.savedAt)>60000) return reload();
     return Promise.resolve(current.data);
   },[endpoint,reload]);
+  useEffect(()=>{
+    if(!endpoint||!enabled)return;
+    const recover=()=>{
+      if(navigator.onLine===false||document.visibilityState==='hidden')return;
+      if(readError)reload();else refreshIfStale();
+    };
+    window.addEventListener('online',recover);
+    window.addEventListener('focus',recover);
+    document.addEventListener('visibilitychange',recover);
+    return()=>{window.removeEventListener('online',recover);window.removeEventListener('focus',recover);document.removeEventListener('visibilitychange',recover);};
+  },[endpoint,enabled,readError,reload,refreshIfStale]);
   function applyRecord(action,record){
     const current=snapshotRef.current;
     if(!current||current.endpoint!==endpoint||!record?.id)return false;

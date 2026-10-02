@@ -10,3 +10,12 @@
 footer a{color:#66846f;text-decoration:underline;text-underline-offset:2px;letter-spacing:0}
 @media(max-width:760px){.brand-logo{width:38px;height:38px}.brand{font-size:15px;gap:9px}.shop-tagline{font-size:9px;line-height:1.4}}
 @media print{.print-brand{break-inside:avoid}.print-brand img{print-color-adjust:exact;-webkit-print-color-adjust:exact}}
+
+/* Arabic lettering on the existing app and sidebar backgrounds. */
+.app-invocation,.brand-invocation{font-family:"Noto Naskh Arabic","Traditional Arabic","Geeza Pro",serif;letter-spacing:normal;font-weight:500;text-align:center}
+.app-invocation{position:absolute;top:5px;left:50%;transform:translateX(-50%);margin:0;color:#526b60;font-size:16px;line-height:1.5;white-space:nowrap;pointer-events:none}
+.topbar{padding-top:22px}
+.brand-invocation{color:#a82832;font-size:19px;line-height:1.5;margin:0 0 10px}
+@media screen{[data-theme=dark] .app-invocation{color:#b5cbbd}[data-theme=dark] .brand-invocation{color:#f17e84}}
+@media(max-width:760px){.topbar{padding-top:0}.app-invocation{position:static;transform:none;font-size:15px;padding:6px 12px 4px;line-height:1.8}.brand-invocation{font-size:18px;margin-bottom:6px}}
+@media print{.app-invocation,.brand-invocation{display:none!important}}
