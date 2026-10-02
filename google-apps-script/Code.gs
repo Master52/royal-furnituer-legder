@@ -1,6 +1,6 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.17.0';
-const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor'];
+const BACKEND_VERSION = '1.20.0';
+const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId'];
 
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -126,7 +126,7 @@ function doPost(e) {
     if(body.action==='deletePayment'){if(!Number.isSafeInteger(body.transaction?._expectedRevision))throw new Error('Payment revision is required for bulk deletion.');body.action='delete';}
     if (body.action === 'list' || body.action === 'listDeleted') {
       const db = ensureSheet_(spreadsheet_());
-      return json_({ok:true,transactions:records_(db.sheet,db.headers).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
+      return json_({ok:true,transactions:visiblePayments_(spreadsheet_(),records_(db.sheet,db.headers)).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
     }
     if (['getInvoices','listAccounts','createParty','updateParty','createInvoice','updateInvoice','cancelInvoice','createInvoiceNote','cancelInvoiceNote','deleteInvoice','deleteParty','deleteInvoiceNote','updateInvoiceNote'].includes(body.action)) {
       {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
@@ -140,6 +140,12 @@ function doPost(e) {
     const {sheet,headers} = ensureSheet_(spreadsheet_());
     const existing = records_(sheet,headers).find(row => row.id === t.id);
     if(body.action==='update'&&hasSettlement_(existing)&&t.settlementDiscountMinor===undefined)throw new Error('Update the app before editing a full & final payment.');
+    if(existing?.invoiceId&&body.action==='create')throw new Error('Retry this payment through its original invoice.');
+    if(body.action==='create'&&t.invoiceId)throw new Error('Linked payments must be created with their invoice.');
+    if(existing?.invoiceId&&body.action==='update'){
+      const invoice=accountReadRows_(spreadsheet_(),'Invoices').find(row=>row.id===existing.invoiceId);
+      if(!invoice||t.partyId!==(existing.partyId||'')||t.direction!==(invoice.type==='sale'?'in':'out')||t.category!==(invoice.type==='sale'?'Sale':'Purchase')||!['Cash','Online'].includes(t.method)||t.recordType!=='payment')throw new Error('Keep this invoice payment linked to its original party and invoice type.');
+    }
     // Older clients must not silently detach a linked payment during edits.
     if (body.action === 'update' && existing?.partyId && t.partyId === undefined) throw new Error('Update the app before editing a party-linked payment.');
     if (body.action === 'create' || body.action === 'update') {
@@ -232,7 +238,7 @@ function refreshReport() {
   if (!validDate_(start)) throw new Error('Report!B2 must contain a date or YYYY-MM-DD text. Run resetReportDates to use this month.');
   if (!validDate_(end)) throw new Error('Report!B3 must contain a date or YYYY-MM-DD text. Run resetReportDates to use this month.');
   if (start > end) throw new Error('Report!B2 (start date) must be on or before Report!B3 (end date). Run resetReportDates to use this month.');
-  const activeRows = records_(sheet,headers).filter(t => !t.deletedAt);
+  const activeRows = visiblePayments_(ss,records_(sheet,headers)).filter(t => !t.deletedAt);
   const seenIds = new Set();
   for (const t of activeRows) {
     if (seenIds.has(t.id)) throw new Error('Cannot refresh report: transaction ID '+t.id+' appears more than once. Remove or repair the duplicate row.');
@@ -271,14 +277,14 @@ function refreshReport() {
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt'],
-  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber'],
+  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],
   InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
   InvoiceMeasurements:['id','invoiceId','itemId','description','lengthMilli','widthMilli','quantityMilli','pieces'],
   InvoiceHistory: ['id','invoiceId','revision','changedAt','editId','snapshot'],
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -357,7 +363,8 @@ function validatePartySettlement_(t,excludeId){
 }
 function normalizedInvoice_(t, allowBlankNumber=false){const started=Date.now();try{return normalizedInvoice_data_(t,allowBlankNumber);}finally{if(accountRequest_)accountRequest_.validationMs+=Date.now()-started;}}
 function normalizedInvoice_data_(t, allowBlankNumber=false) {
-  accountId_(t.id); accountId_(t.partyId);
+  accountId_(t.id); if(![undefined,null,'',false,true,'false','true'].includes(t.walkIn))throw new Error('Invalid walk-in invoice option.');const walkIn=t.walkIn===true||t.walkIn==='true';
+  if(walkIn){if(t.type!=='sale'||t.partyId)throw new Error('Walk-in invoices must be sales without a saved party.');accountId_(t.paymentId);if(t.paymentId!==t.id+'-payment')throw new Error('Invalid walk-in payment link.');}else {accountId_(t.partyId);if(t.paymentId){accountId_(t.paymentId);if(t.paymentId!==t.id+'-payment')throw new Error('Invalid invoice payment link.');}}
   if (t.schemaVersion!==1 || t.currency!=='INR' || !['sale','purchase'].includes(t.type) || !validDate_(t.invoiceDate)) throw new Error('Invalid invoice details.');
   const version=t.itemVersion||'';
   if(version)accountId_(version);
@@ -380,6 +387,13 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
     return {id:item.id,invoiceId:t.id,description:accountText_(item.description,300,true),...(itemNote?{itemNote}:{}),quantityMilli:quantity,rateMinor:rate,discountMinor:discount,lineTotalMinor:lineTotal,costMinor:unitCost,lineCostMinor:lineCost,versionId:version,...(unit?{billingUnit:unit,measurementUnit:['sqft','rft'].includes(unit)?item.measurementUnit:'',measurementMode:item.measurementMode||'quantity',measurementCount:measurements.length,measurements:measurements.map(row=>({description:row.description.trim(),lengthMilli:['sqft','rft'].includes(unit)?row.lengthMilli:0,widthMilli:unit==='sqft'||item.measurementMode==='perimeter'?row.widthMilli:0,quantityMilli:['sqft','rft'].includes(unit)?0:row.quantityMilli,pieces:row.pieces}))}: {})};
   });
   if(items.reduce((sum,item)=>sum+(item.measurements?.length||0),0)>1000)throw new Error('An invoice supports at most 1,000 measurement rows.');
+  const discountMode=t.discountMode||'amount',discountValue=t.discountValue==null||t.discountValue===''?0:Number(t.discountValue);
+  if(!['amount','percent'].includes(discountMode)||!Number.isSafeInteger(discountValue)||discountValue<0||discountValue>100000000000||discountMode==='percent'&&discountValue>10000)throw new Error('Invalid invoice discount.');
+  const invoiceDiscountMinor=discountMode==='percent'?Number((BigInt(total)*BigInt(discountValue)+BigInt(5000))/BigInt(10000)):discountValue;
+  accountAmount_(total);
+  if(invoiceDiscountMinor>total)throw new Error('Invoice discount exceeds the subtotal.');
+  total-=invoiceDiscountMinor;
+  Object.assign(invoice,{discountMode,discountValue,invoiceDiscountMinor,walkIn,paymentId:t.paymentId||''});
   if (total<=0) throw new Error('Invoice total must be positive.');
   accountAmount_(total); accountAmount_(cost);
   return {...invoice,totalMinor:total,costTotalMinor:complete?cost:null,itemCount:items.length,items};
@@ -404,8 +418,32 @@ function accountInvoiceRecord_(invoice,allItems,measurementIndex){
   normalized.items.forEach((item,index)=>{if(!accountSame_(lines[index],item,['quantityMilli','lineTotalMinor','lineCostMinor']))throw new Error('Invalid invoice item totals. Repair '+invoice.invoiceNumber+'.');});
   const revision=Number(invoice.revision||0);
   if(!Number.isSafeInteger(revision)||revision<0)throw new Error('Invalid invoice revision.');
-  return {...invoice,...normalized,revision};
+  return {...invoice,...normalized,revision,itemDiscountMinor:normalized.items.reduce((sum,item)=>sum+item.discountMinor,0)};
 }
+
+function invoiceHeaderDefaults_(invoice){return {...invoice,discountMode:invoice.discountMode||'amount',discountValue:Number(invoice.discountValue||0),invoiceDiscountMinor:Number(invoice.invoiceDiscountMinor||0),walkIn:invoice.walkIn===true||invoice.walkIn==='true',paymentId:invoice.paymentId||''};}
+function visiblePayments_(ss,rows,invoices){
+  if(!rows.some(row=>row.invoiceId))return rows;
+  const committed=new Map((invoices||accountReadRows_(ss,'Invoices')).map(invoice=>[invoice.id,invoice]));
+  return rows.filter(row=>!row.invoiceId||committed.get(row.invoiceId)?.paymentId===row.id);
+}
+const INVOICE_PAYMENT_FIELDS=['id','invoiceId','schemaVersion','recordType','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod'];
+function sameInvoicePayment_(a,b){return INVOICE_PAYMENT_FIELDS.every(key=>String(a[key]??'')===String(b[key]??''));}
+function normalizedInvoicePayment_(payload,invoice){
+  const payment=payload.payment;
+  if(!payment||payment.id!==invoice.paymentId||payment.invoiceId!==invoice.id||payment.partyId!==invoice.partyId||payment.recordType!=='payment'||payment.direction!==(invoice.type==='sale'?'in':'out')||payment.category!==(invoice.type==='sale'?'Sale':'Purchase')||!['Cash','Online'].includes(payment.method)||payment.transactionDate!==invoice.invoiceDate||!Number.isSafeInteger(payment.amountMinor)||payment.amountMinor<=0||payment.amountMinor>invoice.totalMinor||invoice.walkIn&&(payment.party!=='CASH SALE'||payment.amountMinor!==invoice.totalMinor)||hasSettlement_(payment))throw new Error('Invalid invoice payment. Walk-in sales require full payment; party advances must be positive and no greater than the invoice total.');
+  validate_(payment);
+  return Object.fromEntries(INVOICE_PAYMENT_FIELDS.map(key=>[key,payment[key]??'']));
+}
+function stageInvoicePayment_(ss,payment){
+  const {sheet,headers}=ensureSheet_(ss),rows=records_(sheet,headers),matches=rows.filter(row=>row.id===payment.id);
+  if(matches.length>1)throw new Error('Duplicate invoice payment IDs. Repair the Sheet before retrying.');
+  if(matches.length){if(matches[0].deletedAt||!sameInvoicePayment_(matches[0],payment))throw new Error('This payment ID was already used. Retry the original invoice/payment.');return;}
+  const record={...payment,createdAt:new Date().toISOString(),metadata:'{}',deletedAt:'',updatedAt:'',revision:0,lastEditId:'',restoredAt:'',lastRestoreDeletedAt:''};
+  sheet.getRange(sheet.getLastRow()+1,1,1,headers.length).setNumberFormat('@').setValues([literalAccountRow_(headers,record)]);
+  SpreadsheetApp.flush();
+}
+
 function accountAction_(action,t) {
   const ss=spreadsheet_();
   if (action==='listAccounts') {
@@ -416,8 +454,8 @@ function accountAction_(action,t) {
     const invoices=headers.map(invoice=>accountInvoiceRecord_(invoice,itemsByInvoice.get(invoice.id)||[],measurementIndex));
     if (new Set(parties.map(p=>p.id)).size!==parties.length || new Set(headers.map(i=>i.id)).size!==headers.length) throw new Error('Duplicate party or invoice IDs. Repair the Sheet before continuing.');
     parties.forEach(p=>{accountId_(p.id);accountAmount_(Number(p.openingBalanceMinor),true);if(!validDate_(p.openingDate))throw new Error('Invalid party opening date.');});
-    const transactions=accountReadRows_(ss,'Transactions').filter(row=>!row.deletedAt);
-    [...invoices,...transactions.filter(row=>row.partyId)].forEach(row=>{const party=partiesById.get(row.partyId);if(!party || (row.invoiceDate||row.transactionDate)<party.openingDate)throw new Error('A record has a missing party or predates its opening balance. Repair the Sheet before using balances.');});
+    const transactions=visiblePayments_(ss,accountReadRows_(ss,'Transactions'),invoices).filter(row=>!row.deletedAt);
+    [...invoices.filter(row=>!row.walkIn),...transactions.filter(row=>row.partyId)].forEach(row=>{const party=partiesById.get(row.partyId);if(!party || (row.invoiceDate||row.transactionDate)<party.openingDate)throw new Error('A record has a missing party or predates its opening balance. Repair the Sheet before using balances.');});
     const invoicesById=new Map(invoices.map(invoice=>[invoice.id,invoice]));
     const notes=accountReadRows_(ss,'InvoiceNotes').map(note=>accountNoteRecord_(note,invoicesById));
     if(new Set(notes.map(note=>note.id)).size!==notes.length)throw new Error('Duplicate invoice note IDs. Repair the Sheet before continuing.');
@@ -425,7 +463,7 @@ function accountAction_(action,t) {
     const noteTotals=new Map();
     notes.filter(note=>note.status==='issued').forEach(note=>{const value=noteTotals.get(note.invoiceId)||{amount:0,cost:0,known:true};const sign=note.type==='credit'?-1:1;value.amount+=sign*note.amountMinor;if(note.costAdjustmentMinor===null)value.known=false;else value.cost+=sign*note.costAdjustmentMinor;noteTotals.set(note.invoiceId,value);});
     invoices.forEach(invoice=>{const adjustment=noteTotals.get(invoice.id);if(!adjustment)return;const net=Number(invoice.totalMinor)+adjustment.amount;if(!Number.isSafeInteger(net)||net<0||net>100000000000)throw new Error('Invalid correction totals. Repair the Sheet before using balances.');if(invoice.costTotalMinor!==null&&invoice.costTotalMinor!==''&&adjustment.known){const cost=Number(invoice.costTotalMinor)+adjustment.cost;if(!Number.isSafeInteger(cost)||cost<0||cost>100000000000)throw new Error('Invalid cost correction totals.');}});
-    return {ok:true,parties,invoices:t?.summary?invoices.map(invoice=>{const {items,...summary}=invoice;return {...summary,_summary:true,itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes};
+    return {ok:true,parties,invoices:t?.summary?invoices.map(invoice=>{const {items,paymentSnapshot,...summary}=invoice;return {...summary,_summary:true,itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes};
   }
   if(action==='getInvoices'){
     if(!t||!Array.isArray(t.ids)||!t.ids.length||t.ids.length>500)throw new Error('Choose between 1 and 500 invoices.');
@@ -464,9 +502,11 @@ function accountAction_(action,t) {
   } else if (action==='createInvoice') {
     if(t.itemVersion)throw new Error('New invoices must not specify an edit version.');
     const normalized=normalizedInvoice_(t,true),{items,...invoice}=normalized;
+    const payment=invoice.paymentId?normalizedInvoicePayment_(t,invoice):null;
+    if(t.payment&&!invoice.paymentId)throw new Error('Invoice payment link is required.');
     const parties=accountRows_(ss,'Parties'),party=parties.find(p=>p.id===t.partyId);
-    if (!party || party.archivedAt) throw new Error('Party not found or archived.');
-    if (t.invoiceDate<party.openingDate) throw new Error('Invoice date cannot predate the party opening balance date.');
+    if (!invoice.walkIn&&(!party || party.archivedAt)) throw new Error('Party not found or archived.');
+    if (!invoice.walkIn&&t.invoiceDate<party.openingDate) throw new Error('Invoice date cannot predate the party opening balance date.');
     const invoices=accountRows_(ss,'Invoices'),existing=invoices.find(row=>row.id===t.id);
     const allItems=accountRows_(ss,'InvoiceItems').filter(row=>row.invoiceId===t.id);
     const oldItems=allItems.filter(row=>!(row.versionId||''));
@@ -474,8 +514,9 @@ function accountAction_(action,t) {
     if (existing) {
       accountStageMeasurements_(ss,items,true);
       const original=existing.itemVersion?JSON.parse(accountRows_(ss,'InvoiceHistory').find(row=>row.invoiceId===t.id&&Number(row.revision)===0)?.snapshot||'null'):existing;
-      if (!original || !accountSame_(original,invoice,Object.keys(invoice).filter(key=>key!=='invoiceNumber'||invoice.invoiceNumber)) || oldItems.length!==items.length) throw new Error('This ID already belongs to a different invoice.');
-      return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
+      if (!original || !accountSame_(invoiceHeaderDefaults_(original),invoice,Object.keys(invoice).filter(key=>key!=='invoiceNumber'||invoice.invoiceNumber)) || oldItems.length!==items.length) throw new Error('This ID already belongs to a different invoice.');
+      if(payment){const originalPayment=JSON.parse(existing.paymentSnapshot||'null');if(!originalPayment||!sameInvoicePayment_(originalPayment,payment))throw new Error('Retry the original invoice payment details.');}
+      return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems),...(payment?{transaction:visiblePayments_(ss,accountReadRows_(ss,'Transactions')).find(row=>row.id===invoice.paymentId)}:{})};
     }
     if (!invoice.invoiceNumber) {
       const prefix=t.type==='sale'?'RF-S-':'RF-P-';
@@ -495,29 +536,35 @@ function accountAction_(action,t) {
     const oldItemIds=new Set(oldItems.map(item=>item.id));accountAppendRows_(ss,'InvoiceItems',items.filter(item=>!oldItemIds.has(item.id)));
     accountStageMeasurements_(ss,items);
     SpreadsheetApp.flush();
-    record={...invoice,items,partyName:party.name,partyPhone:party.phone,partyAddress:party.address,status:'issued',createdAt:new Date().toISOString(),cancelledAt:'',cancelReason:'',deletedAt:'',deleteReason:'',revision:0,lastEditId:'',updatedAt:''};
+    // The payment is staged first. Readers expose it only after this invoice header commits.
+    if(payment)stageInvoicePayment_(ss,payment);
+    record={...invoice,items,itemDiscountMinor:items.reduce((sum,item)=>sum+item.discountMinor,0),paymentSnapshot:payment?JSON.stringify(payment):'',partyName:invoice.walkIn?'CASH SALE':party.name,partyPhone:invoice.walkIn?'':party.phone,partyAddress:invoice.walkIn?'':party.address,status:'issued',createdAt:new Date().toISOString(),cancelledAt:'',cancelReason:'',deletedAt:'',deleteReason:'',revision:0,lastEditId:'',updatedAt:''};
     accountWrite_(ss,'Invoices',record);
+    if(payment){SpreadsheetApp.flush();return {ok:true,id:t.id,record,transaction:accountReadRows_(ss,'Transactions').find(row=>row.id===invoice.paymentId)};}
   } else if(action==='updateInvoice'){
     accountId_(t._editId);
     const existing=accountRows_(ss,'Invoices').find(row=>row.id===t.id);
     if(!existing)throw new Error('Invoice not found.');
     if(t.type!==existing.type||t.partyId!==existing.partyId||t.invoiceNumber!==existing.invoiceNumber)throw new Error('Invoice number, type and party cannot be changed.');
     const party=accountRows_(ss,'Parties').find(row=>row.id===t.partyId);
-    if(!party||t.invoiceDate<party.openingDate)throw new Error('Invoice date cannot predate the party opening balance date.');
+    if(!invoiceHeaderDefaults_(existing).walkIn&&(!party||t.invoiceDate<party.openingDate))throw new Error('Invoice date cannot predate the party opening balance date.');
     const normalized=normalizedInvoice_({...t,itemVersion:t._editId,items:t.items.map((item,index)=>({...item,id:t.id+'-'+t._editId+'-'+(index+1),invoiceId:t.id}))});
+    if(Boolean(normalized.walkIn)!==invoiceHeaderDefaults_(existing).walkIn||normalized.paymentId!==(existing.paymentId||''))throw new Error('Invoice customer mode and payment link cannot be changed.');
+    if(normalized.walkIn&&(normalized.totalMinor!==Number(existing.totalMinor)||normalized.invoiceDate!==existing.invoiceDate))throw new Error('Walk-in invoice amount/date are linked to its payment. Delete and reissue both records to change them. CP and item details can be edited without changing the total.');
+    if(t.invoiceDiscountSchemaVersion!==1&&Number(existing.invoiceDiscountMinor||0)>0)throw new Error('Update the app before editing an invoice-level discount.');
     const allItems=accountRows_(ss,'InvoiceItems').filter(row=>row.invoiceId===t.id);
     const staged=allItems.filter(row=>row.versionId===t._editId);
     if(staged.some(old=>!normalized.items.some(item=>item.id===old.id&&accountSame_(old,item,ACCOUNT_HEADERS.InvoiceItems))))throw new Error('This edit ID was already used for different items. Retry the original edit.');
     if(existing.lastEditId===t._editId){
       accountStageMeasurements_(ss,normalized.items,true);
-      if(!accountSame_(existing,normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
+      if(!accountSame_(invoiceHeaderDefaults_(existing),normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
       return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
     }
     const history=accountRows_(ss,'InvoiceHistory');
     const committed=history.filter(row=>row.invoiceId===t.id).map(row=>JSON.parse(row.snapshot)).find(previous=>previous.id===t.id&&previous.lastEditId===t._editId);
     if(committed){
       accountStageMeasurements_(ss,normalized.items,true);
-      if(!accountSame_(committed,normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
+      if(!accountSame_(invoiceHeaderDefaults_(committed),normalized,Object.keys(normalized).filter(key=>key!=='items'))||staged.length!==normalized.items.length)throw new Error('Edit ID already used for a different invoice edit.');
       return {ok:true,id:t.id,record:accountInvoiceRecord_(existing,allItems)};
     }
     if(existing.status!=='issued')throw new Error('Cancelled invoices cannot be edited.');
@@ -533,7 +580,7 @@ function accountAction_(action,t) {
     const stagedIds=new Set(staged.map(item=>item.id));accountAppendRows_(ss,'InvoiceItems',normalized.items.filter(item=>!stagedIds.has(item.id)));
     accountStageMeasurements_(ss,normalized.items);
     SpreadsheetApp.flush();
-    record={...existing,...normalized,revision:previous.revision+1,lastEditId:t._editId,updatedAt:changedAt};
+    record={...existing,...normalized,itemDiscountMinor:normalized.items.reduce((sum,item)=>sum+item.discountMinor,0),revision:previous.revision+1,lastEditId:t._editId,updatedAt:changedAt};
     accountWrite_(ss,'Invoices',record,true);
   } else if (action==='createInvoiceNote') {
     const normalized=normalizedInvoiceNote_(t);

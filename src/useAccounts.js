@@ -173,6 +173,10 @@ export default function useAccounts(endpoint, enabled) {
           record=operation.action==='create'?refreshed?.transactions.find(item=>item.id===operation.payload.id):operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
           if(!record)throw new Error('Upload was acknowledged. Retry to confirm the saved record.');
         }
+        if(operation.action==='createInvoice'&&operation.payload.payment){
+          if(result.transaction?.id!==operation.payload.paymentId)throw new Error('Invoice uploaded; retry to confirm its linked payment.');
+          if(!applyRecord('create',result.transaction)){const refreshed=await reload({fresh:true});if(!refreshed?.transactions.some(row=>row.id===operation.payload.paymentId))throw new Error('Retry to confirm the linked invoice payment.');}
+        }
         if(operation.action==='deleteInvoice')setLastInvoice(previous=>previous?.id===record.id?null:previous);
         if(operation.action==='createInvoice')setLastInvoice({id:record.id,number:record.invoiceNumber});
         await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(operation)));

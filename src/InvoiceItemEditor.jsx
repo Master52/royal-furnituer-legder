@@ -50,11 +50,11 @@ export default memo(function InvoiceItemEditor({item,index,type,onChange,onRemov
     <label>Billing unit<select data-invoice-field="unit" aria-label={prefix+' billing unit'} disabled={!measurementEnabled} value={unit||'nos'} onChange={e=>selectUnit(e.target.value)}>{Object.entries(BILLING_UNITS).map(([value,label])=><option key={value} value={value}>{label.toUpperCase()}</option>)}</select></label>
     {!grouped&&!dimensions&&<label>{unit==='kg'?'Weight (kg)':'Quantity'}<input data-invoice-field="quantity" type="number" min="0.001" max="1000000" step="0.001" required value={item.quantity} onChange={e=>update('quantity',e.target.value)}/></label>}
     <label>Rate (₹)<input aria-label="Rate (₹)" data-invoice-field="rate" type="number" min="0" step="0.01" required value={item.rate} onChange={e=>update('rate',e.target.value)}/></label>
-    <label>Line discount (₹)<input data-invoice-field="discount" type="number" min="0" step="0.01" value={item.discount} onChange={e=>update('discount',e.target.value)}/></label>
     {type==='sale'&&<label>CP (₹)<input aria-label="Cost price (₹)" data-invoice-field="cost" type="number" min="0" step="0.01" value={item.cost} onChange={e=>update('cost',e.target.value)} placeholder="Optional"/></label>}
     <label>Description<input aria-label={prefix+' additional description'} disabled={!itemDescriptionsEnabled} title={itemDescriptionsEnabled?undefined:'Deploy backend 1.15.2 to save item descriptions'} maxLength="500" value={item.itemNote||''} placeholder="Optional" onChange={e=>update('itemNote',e.target.value)}/></label>
     <button type="button" className="outline" disabled={removeDisabled} onClick={()=>onRemove(index)}>Remove</button>
     </div>
+    {Number(item.discount)>0&&<small className="legacy-item-discount">Existing item discount: {money(Math.round(Number(item.discount)*100))} (preserved)</small>}
     <div className="item-grouping-control"><label><input type="checkbox" aria-label={prefix+' group items'} checked={grouped} disabled={!measurementEnabled} onChange={e=>toggleGrouping(e.target.checked)}/> GROUP ITEMS</label></div>
     {(dimensions||grouped)&&<section className="item-measurements" aria-label={prefix+' measurements'}>
       <div className="measurement-entry">
