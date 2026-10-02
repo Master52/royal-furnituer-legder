@@ -12,7 +12,7 @@ export function writeAccountQueue(storage,queue){
   if(queue.length)storage.setItem(ACCOUNT_QUEUE_KEY,JSON.stringify({queue}));else storage.removeItem(ACCOUNT_QUEUE_KEY);
 }
 export async function queueLock(task){
-  if(!globalThis.navigator?.locks)return Promise.resolve().then(task);
+  if(!globalThis.navigator?.locks)throw new Error('This browser cannot safely coordinate saved changes between tabs. Use a browser with Web Locks support. Nothing was added to the queue.');
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),5000);
   try{return await navigator.locks.request('rf.accounts.queue',{signal:controller.signal},task);}
@@ -20,5 +20,6 @@ export async function queueLock(task){
   finally{clearTimeout(timer);}
 }
 export function uploadLock(task){
-  return globalThis.navigator?.locks?navigator.locks.request('rf.accounts.upload',{ifAvailable:true},lock=>lock?task():false):task();
+  if(!globalThis.navigator?.locks)return Promise.reject(new Error('This browser cannot safely coordinate uploads between tabs. Use a browser with Web Locks support.'));
+  return navigator.locks.request('rf.accounts.upload',task);
 }

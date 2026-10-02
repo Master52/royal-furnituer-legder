@@ -22,7 +22,7 @@ export default function PartyPicker({ parties, value, selectedId, onChange, onSe
     <input id={id} disabled={disabled} name="invoice-party" role="combobox" aria-autocomplete="list" aria-controls={expanded?listId:undefined} aria-expanded={expanded} aria-activedescendant={expanded?`${id}-${index}`:undefined}
       autoComplete="off" required placeholder="Start typing a party name or phone" value={value}
       onFocus={()=>setOpen(Boolean(value.trim())&&!selectedId)} onChange={event=>{onChange(event.target.value);setOpen(Boolean(event.target.value.trim()));setActive(0);}} onKeyDown={keyDown}/>
-    {expanded&&<div id={listId} role="listbox" className="invoice-party-options">
+    {expanded&&<div id={listId} role="listbox" aria-label="Matching parties" className="invoice-party-options">
       {matches.map((party,i)=><button id={`${id}-${i}`} key={party.id} type="button" role="option" tabIndex={-1} aria-selected={index===i} className={index===i?'active':''} onMouseDown={event=>event.preventDefault()} onClick={()=>choose(i)}>
         <strong>{party.name}</strong><small>{party.phone||'No phone'}{party._pending?' · Saving…':''}</small>
       </button>)}

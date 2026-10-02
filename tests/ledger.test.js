@@ -7,6 +7,7 @@ import { validateEndpoint, request } from '../src/api.js';
 import { newEntry, editEntry, hasDraft, shortcutAction } from '../src/entry.js';
 import { normalizePreferences, entryDefaults, preferenceKey, csvForTransactions } from '../src/preferences.js';
 const form = { amount:'1250.55',direction:'in',category:'Sale',method:'Cash',dateTime:'2026-09-12T14:20',party:'Customer',notes:'' };
+const TEST_ACCESS_TOKEN='test-ledger-access-token-0000000000000001';
 const id = '12345678-1234-1234-1234-123456789012';
 test('new payment preserves selections but clears prior amounts, notes and backdating',()=>{
   const next = newEntry({category:'Bhara',method:'Cheque',direction:'out',amount:'500',party:'Customer',notes:'old',customDate:true,dateTime:'2001-01-01T12:00',chequeDate:'2001-01-01'});
@@ -152,15 +153,15 @@ function backend() {
     setValues(rows){rows.forEach((row,i)=>{data[r-1+i]??=[];row.forEach((value,j)=>data[r-1+i][c-1+j]=typeof value==='string'&&value.startsWith("'")?value.slice(1):value);});return this;},
     setNumberFormat(){return this;},setBackground(){return this;},setFontColor(){return this;},setFontWeight(){return this;}
   };}};
-  const context=vm.createContext({console,ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:()=> 'sheet-id'})},SpreadsheetApp:{openById:()=>({getSheetByName:()=>sheet}),flush:()=>{}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
+  const context=vm.createContext({console,ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:key=>key==='LEDGER_ACCESS_TOKEN'?TEST_ACCESS_TOKEN:'sheet-id'})},SpreadsheetApp:{openById:()=>({getSheetByName:()=>sheet}),flush:()=>{}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
   vm.runInContext(readFileSync(new URL('../google-apps-script/Code.gs',import.meta.url),'utf8'),context);
-  return {context,data,list:()=>context.doPost({postData:{contents:JSON.stringify({action:'list'})}}),post:t=>context.doPost({postData:{contents:JSON.stringify({action:'create',transaction:t})}})};
+  return {context,data,list:()=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}),post:t=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'create',transaction:t})}})};
 }
 test('backend retries are idempotent and conflicting IDs cannot overwrite history',()=>{
   const {post,data,context}=backend();const t=makeTransaction({...form,notes:'=SUM(A1:A9)'},id);
   assert.equal(post(t).ok,true); assert.equal(post(t).duplicate,true); assert.equal(data.length,2);
   assert.equal(post({...t,amountMinor:999}).ok,false); assert.equal(data.length,2);
-  assert.equal(context.doPost({postData:{contents:JSON.stringify({action:'list'})}}).transactions[0].notes,'=SUM(A1:A9)');
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].notes,'=SUM(A1:A9)');
 });
 test('backend rejects missing cheque dates and impossible business dates',()=>{
   const {post}=backend();const t=makeTransaction(form,id);
@@ -171,7 +172,7 @@ test('schema extension preserves unknown columns and historical values',()=>{
   const {post,data,context}=backend(); post(makeTransaction(form,id));
   data[0].push('futureField');data[1].push('keep me');
   post(makeTransaction(form,'22345678-1234-1234-1234-123456789012'));
-  assert.equal(context.doPost({postData:{contents:JSON.stringify({action:'list'})}}).transactions[0].futureField,'keep me'); assert.equal(data[2].at(-1),'');
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].futureField,'keep me'); assert.equal(data[2].at(-1),'');
 });
 test('report dates handle Sheets Date objects and whitespace without guessing ambiguous dates',()=>{
   const {context}=backend();
@@ -186,7 +187,7 @@ test('setup fills missing report date cells even when the report already contain
   const {context}=backend();const cells={B2:'2024-02-10',B3:''};
   const report={getRange:cell=>({setValues(){return this;},getValue:()=>cells[cell],setNumberFormat(){return this;},setValue(value){cells[cell]=value;return this;}})};
   context.SpreadsheetApp.getActiveSpreadsheet=()=>({getId:()=> 'id',getSheetByName:()=>report});
-  context.PropertiesService.getScriptProperties=()=>({setProperty(){}});
+  context.PropertiesService.getScriptProperties=()=>({setProperty(){},getProperty:()=>TEST_ACCESS_TOKEN});
   context.ensureSheet_=()=>{};context.ensureAccounts_=()=>{};context.currentReportMonth_=()=>['2024-02-01','2024-02-29'];
   context.refreshReport=()=>{};
   context.setup();assert.deepEqual(cells,{B2:'2024-02-10',B3:'2024-02-29'});
@@ -194,13 +195,13 @@ test('setup fills missing report date cells even when the report already contain
 });
 test('deletion is persistent, idempotent, preserves history and rejects recreation',()=>{
   const {post,data,context}=backend(); const t=makeTransaction(form,id); post(t);
-  const remove=id=>context.doPost({postData:{contents:JSON.stringify({action:'delete',transaction:{id}})}});
+  const remove=id=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'delete',transaction:{id}})}});
   assert.equal(remove('invalid').ok,false);
   assert.equal(remove('99999999-1234-1234-1234-123456789012').ok,false);
   assert.equal(remove(id).deleted,true);
   const deletedAt=data[1][data[0].indexOf('deletedAt')];assert.ok(deletedAt);
   assert.equal(remove(id).deleted,true);assert.equal(data[1][data[0].indexOf('deletedAt')],deletedAt);
-  assert.equal(context.doPost({postData:{contents:JSON.stringify({action:'list'})}}).transactions.length,0);
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,0);
   assert.equal(data.length,2);assert.equal(data[1][data[0].indexOf('amountMinor')],125055);
   assert.equal(post(t).ok,false);
 });
@@ -221,13 +222,13 @@ test('Sheet report stops instead of publishing totals when a transaction amount 
   context.records_=()=>[{id:'corrupt-row',transactionDate:'2026-09-12',amountMinor:'bad',category:'Sale',direction:'in'}];
   assert.throws(()=>context.refreshReport(),/has an invalid amount/);
 });
-test('direct backend access lists records and still excludes deleted rows',()=>{
+test('public GET rejects access while authenticated lists exclude deleted rows',()=>{
   const {context,post}=backend();
-  assert.equal(context.doGet().ok,true);
+  assert.equal(context.doGet().code,'UNAUTHORIZED');
   post(makeTransaction(form,id));
-  assert.equal(context.doGet().transactions.length,1);
-  context.doPost({postData:{contents:JSON.stringify({action:'delete',transaction:{id}})}});
-  assert.equal(context.doGet().transactions.length,0);
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,1);
+  context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'delete',transaction:{id}})}});
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,0);
 });
 test('client reads and writes without Firebase credentials',async()=>{
   const originalFetch=globalThis.fetch;
@@ -236,16 +237,16 @@ test('client reads and writes without Firebase credentials',async()=>{
   try {
     await request('https://script.google.com/macros/s/test/exec');
     await request('https://script.google.com/macros/s/test/exec',{id},'delete');
-    assert.equal(calls[0].method,undefined);
+    assert.equal(calls[0].method,'POST');assert.deepEqual(JSON.parse(calls[0].body),{action:'list',transaction:{}});
     assert.deepEqual(JSON.parse(calls[1].body),{action:'delete',transaction:{id}});
   } finally {globalThis.fetch=originalFetch;}
 });
 test('backend reports its deployed version without modifying existing transactions',()=>{
   const {context,post,data}=backend();
-  assert.equal(context.doGet().backendVersion,'1.15.3');
-  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.15.3');
+  assert.equal(context.doGet().backendVersion,'1.17.0');
+  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.17.0');
   assert.equal(data[1][data[0].indexOf('schemaVersion')],1);
-  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.15.3');
+  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.17.0');
 });
 test('Apps Script appends settlement columns and validates change, exchange and adjustment records',()=>{
   const {context,post,data}=backend();
@@ -253,7 +254,7 @@ test('Apps Script appends settlement columns and validates change, exchange and 
   assert.equal(post(sale).ok,true);
   const headers=data[0];
   for(const name of ['recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod']) assert.ok(headers.includes(name));
-  const saved=context.doGet().transactions[0];
+  const saved=context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0];
   assert.equal(saved.cashReceivedMinor,12000);assert.equal(saved.onlineChangeMinor,2000);assert.equal(saved.cashChangeMinor,0);
   const adjustment=makeTransaction({...form,recordType:'adjustment',adjustmentMethod:'Cash',countedBalance:'90',expectedCashMinor:10000,expectedOnlineMinor:0},'82345678-1234-1234-1234-123456789012');
   assert.equal(post(adjustment).ok,true);
@@ -265,7 +266,7 @@ test('Apps Script appends settlement columns and validates change, exchange and 
   assert.equal(post({...sale,onlineChangeMinor:'2e3'}).ok,false);
   const transfer=makeTransaction({...form,recordType:'transfer',amount:'35',exchangeDirection:'receive-cash-send-online'},'32345678-1234-1234-1234-123456789012');
   assert.equal(post(transfer).ok,true);
-  assert.equal(context.doGet().transactions[3].recordType,'transfer');
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[3].recordType,'transfer');
   assert.equal(post({...transfer,fromMethod:'Cash'}).ok,false);
   assert.equal(data.length,5);
 });
@@ -288,13 +289,13 @@ test('editing a marked cash adjustment keeps the same target balance',()=>{
 });
 test('editing preserves ID, creation time, unknown columns and handles duplicate retries',()=>{
   const {context,post,data}=backend();const t=makeTransaction(form,id);post(t);
-  const created=context.doGet().transactions[0].createdAt;
+  const created=context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].createdAt;
   data[0].push('future');data[1].push('preserve');
   const change={...t,amountMinor:9900,cashReceivedMinor:9900,cashChangeMinor:0,onlineChangeMinor:0,notes:'=literal note',_expectedRevision:0,_editId:'33333333-1234-1234-1234-123456789012'};
-  const edit=t=>context.doPost({postData:{contents:JSON.stringify({action:'update',transaction:t})}});
+  const edit=t=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'update',transaction:t})}});
   const result=edit(change);assert.equal(result.updated,true);assert.equal(result.transaction.id,id);assert.equal(result.transaction.createdAt,created);assert.equal(result.transaction.revision,1);assert.ok(result.transaction.updatedAt);
   assert.deepEqual(paymentMethodBalance([result.transaction]),{Cash:9900,Online:0});
-  assert.equal(context.doGet().transactions[0].future,'preserve');assert.equal(context.doGet().transactions[0].notes,'=literal note');
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].future,'preserve');assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].notes,'=literal note');
   assert.equal(edit(change).transaction.revision,1);assert.equal(data.length,2);
   assert.equal(edit({...change,amountMinor:20,cashReceivedMinor:20}).code,'EDIT_CONFLICT');
   assert.equal(edit({...change,_editId:'44444444-1234-1234-1234-123456789012'}).code,'EDIT_CONFLICT');
@@ -303,16 +304,16 @@ test('editing preserves ID, creation time, unknown columns and handles duplicate
 test('cashflow adjustment edits update its appended balance fields',()=>{
   const {context,post}=backend();const adjustment=makeTransaction({...form,recordType:'adjustment',adjustmentMethod:'Cash',countedBalance:'90',expectedCashMinor:10000,expectedOnlineMinor:0},id);post(adjustment);
   const updated={...adjustment,countedCashMinor:9500,cashAdjustmentMinor:-500,amountMinor:500,_expectedRevision:0,_editId:'93333333-1234-1234-1234-123456789012'};
-  const result=context.doPost({postData:{contents:JSON.stringify({action:'update',transaction:updated})}});
+  const result=context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'update',transaction:updated})}});
   assert.equal(result.updated,true);assert.equal(result.transaction.countedCashMinor,9500);assert.equal(result.transaction.cashAdjustmentMinor,-500);
 });
 test('edits reject deleted payments and invalid cheque data without changing totals',()=>{
   const {context,post}=backend();const t=makeTransaction(form,id);post(t);
-  const edit=t=>context.doPost({postData:{contents:JSON.stringify({action:'update',transaction:t})}});
+  const edit=t=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'update',transaction:t})}});
   const changed={...t,_expectedRevision:0,_editId:'33333333-1234-1234-1234-123456789012',method:'Cheque',chequeDate:''};
-  assert.equal(edit(changed).ok,false);assert.equal(context.doGet().transactions[0].method,'Cash');
-  context.doPost({postData:{contents:JSON.stringify({action:'delete',transaction:{id}})}});
-  assert.equal(edit({...changed,method:'Cash'}).code,'EDIT_CONFLICT');assert.equal(context.doGet().transactions.length,0);
+  assert.equal(edit(changed).ok,false);assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions[0].method,'Cash');
+  context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'delete',transaction:{id}})}});
+  assert.equal(edit({...changed,method:'Cash'}).code,'EDIT_CONFLICT');assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,0);
 });
 test('preferences validate defaults and keep shop settings separate by endpoint',()=>{
   const p=normalizePreferences({shopName:'  My shop  ',defaultCategory:'Bhara',defaultMethod:'Online',theme:'dark',largeText:true,printNotes:false,printContact:false});
@@ -336,20 +337,20 @@ test('CSV preserves quoted multiline data, decimal amounts and neutralizes formu
 });
 test('deleted list and restore preserve records and handle retries without duplication',()=>{
   const {context,post,data}=backend();const t=makeTransaction({...form,notes:'=literal'},id);post(t);
-  const call=(action,transaction={})=>context.doPost({postData:{contents:JSON.stringify({action,transaction})}});
+  const call=(action,transaction={})=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action,transaction})}});
   assert.equal(call('listDeleted').transactions.length,0);
   call('delete',{id});const removed=call('listDeleted').transactions[0];
-  assert.equal(context.doGet().transactions.length,0);assert.equal(removed.revision,1);
+  assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,0);assert.equal(removed.revision,1);
   const payload={id,deletedAt:removed.deletedAt,_expectedRevision:removed.revision};
   const restored=call('restore',payload);assert.equal(restored.restored,true);assert.equal(restored.transaction.revision,2);
   assert.equal(restored.transaction.amountMinor,t.amountMinor);assert.equal(restored.transaction.notes,'=literal');assert.ok(restored.transaction.restoredAt);
-  assert.equal(call('listDeleted').transactions.length,0);assert.equal(context.doGet().transactions.length,1);
+  assert.equal(call('listDeleted').transactions.length,0);assert.equal(context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action:'list'})}}).transactions.length,1);
   assert.equal(call('restore',payload).restored,true);assert.equal(data.length,2);
   call('delete',{id});assert.equal(call('restore',payload).ok,false);
 });
 test('stale edits cannot overwrite restored payments',()=>{
   const {context,post}=backend();const t=makeTransaction(form,id);post(t);
-  const call=(action,transaction={})=>context.doPost({postData:{contents:JSON.stringify({action,transaction})}});
+  const call=(action,transaction={})=>context.doPost({postData:{contents:JSON.stringify({accessToken:TEST_ACCESS_TOKEN,action,transaction})}});
   call('delete',{id});const deleted=call('listDeleted').transactions[0];
   assert.equal(call('restore',{id,deletedAt:'wrong',_expectedRevision:1}).ok,false);
   call('restore',{id,deletedAt:deleted.deletedAt,_expectedRevision:deleted.revision});

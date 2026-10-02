@@ -12,8 +12,10 @@ export function validMinorAmount(value) {
   const amount=integerValue(value);
   return amount>0 && amount<=100000000000;
 }
+export const hasSettlement = t => t?.settlementDiscountMinor!==undefined && t.settlementDiscountMinor!==null && t.settlementDiscountMinor!=='';
 export function transactionIntegrityIssue(t) {
   if (!t || typeof t!=='object') return 'invalid transaction row';
+  if(hasSettlement(t)&&(!Number.isSafeInteger(integerValue(t.settlementDiscountMinor))||Number(t.settlementDiscountMinor)<0||Number(t.settlementDiscountMinor)>100000000000||!t.partyId||t.direction!=='in'||t.category!=='Sale'||t.recordType&&t.recordType!=='payment'))return 'invalid party settlement';
   if(t.recordType==='adjustment'){
     if(!validMinorAmount(t.amountMinor))return 'invalid cashflow adjustment amount';
     if(!validLocalDateTime(`${t.transactionDate}T${t.transactionTime}`))return 'invalid transaction date or time';

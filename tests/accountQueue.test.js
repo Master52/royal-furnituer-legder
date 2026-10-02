@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock } from '../src/accountQueue.js';
+import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock, uploadLock } from '../src/accountQueue.js';
 import { hasInvoiceDraft, invoiceDraftKey, readInvoiceDraft } from '../src/invoiceDraft.js';
 import { blankInvoice } from '../src/accounts.js';
 
@@ -61,4 +61,19 @@ test('queue locks abort blocked saves with a recoverable message and never run t
   const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');let ran=false;
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:{request:async(name,options,task)=>{assert.equal(name,'rf.accounts.queue');assert.ok(options.signal instanceof AbortSignal);throw Object.assign(new Error('Lock aborted'),{name:'AbortError'});}}}});
   try{await assert.rejects(queueLock(()=>ran=true),/Another app tab is blocking local saving/);assert.equal(ran,false);}finally{if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;}
+});
+
+test('upload locks wait for other queues instead of silently skipping their next operation',async()=>{
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');let release,ran=false;
+  const held=new Promise(resolve=>{release=resolve;});
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:{request:async(name,task)=>{assert.equal(name,'rf.accounts.upload');await held;return task();}}}});
+  try{const uploading=uploadLock(()=>{ran=true;return 'confirmed';});await Promise.resolve();assert.equal(ran,false);release();assert.equal(await uploading,'confirmed');}
+  finally{if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;}
+});
+
+test('unsupported browsers refuse unsafe queue writes and uploads',async()=>{
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');let ran=false;
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{}});
+  try{await assert.rejects(queueLock(()=>{ran=true;}),/Web Locks/);await assert.rejects(uploadLock(()=>{ran=true;}),/Web Locks/);assert.equal(ran,false);}
+  finally{if(descriptor)Object.defineProperty(globalThis,'navigator',descriptor);else delete globalThis.navigator;}
 });

@@ -1,10 +1,12 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.15.3';
-const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason'];
+const BACKEND_VERSION = '1.17.0';
+const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor'];
 
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', ss.getId());
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('SPREADSHEET_ID', ss.getId());
+  if (!properties.getProperty('LEDGER_ACCESS_TOKEN')) properties.setProperty('LEDGER_ACCESS_TOKEN', Utilities.getUuid().replace(/-/g,'') + Utilities.getUuid().replace(/-/g,''));
   ensureSheet_(ss);
   ensureAccounts_(ss);
   const report = ss.getSheetByName('Report') || ss.insertSheet('Report');
@@ -43,11 +45,12 @@ function spreadsheet_() {
   const ss=SpreadsheetApp.openById(id);if(accountRequest_)accountRequest_.spreadsheet=ss;return ss;
 }
 function ensureSheet_(ss) {
-  const sheet = ss.getSheetByName('Transactions') || ss.insertSheet('Transactions');
-  let headers = sheet.getLastColumn() ? sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0] : [];
-  HEADERS.forEach(name => { if (headers.indexOf(name) < 0) { headers.push(name); sheet.getRange(1,headers.length).setValue(name); } });
-  sheet.setFrozenRows(1);
-  sheet.getRange(1,1,1,headers.length).setBackground('#214c3f').setFontColor('#ffffff').setFontWeight('bold');
+  const existing=ss.getSheetByName('Transactions');
+  const sheet=existing||ss.insertSheet('Transactions'),lastColumn=sheet.getLastColumn();
+  let headers=lastColumn?sheet.getRange(1,1,1,lastColumn).getValues()[0]:[];
+  const missing=HEADERS.filter(name=>headers.indexOf(name)<0);
+  if(missing.length){sheet.getRange(1,headers.length+1,1,missing.length).setValues([missing]);headers=headers.concat(missing);}
+  if(!existing||missing.length){sheet.setFrozenRows(1);sheet.getRange(1,1,1,headers.length).setBackground('#214c3f').setFontColor('#ffffff').setFontWeight('bold');}
   return {sheet,headers};
 }
 function records_(sheet,headers) {
@@ -58,9 +61,16 @@ let accountRequest_ = null;
 function performanceSnapshot_(){const p=accountRequest_;return p?{elapsedMs:Date.now()-p.startedAt,lockWaitMs:p.lockWaitMs,reads:p.reads,readMs:p.readMs,validationMs:p.validationMs,writes:p.writes,writeMs:p.writeMs}:null;}
 function json_(data) { if(accountRequest_)data={...data,performance:performanceSnapshot_()};return ContentService.createTextOutput(JSON.stringify({...data,backendVersion:BACKEND_VERSION})).setMimeType(ContentService.MimeType.JSON); }
 function doGet() {
-  try { const db = ensureSheet_(spreadsheet_()); return json_({ok:true,transactions:records_(db.sheet,db.headers).filter(t => !t.deletedAt)}); }
-  catch (error) { return json_({ok:false,error:'Could not load records. Check the script setup and permissions.'}); }
+  return json_({ok:false,code:'UNAUTHORIZED',error:'Ledger requests require an access token. Open app Settings to connect.'});
 }
+function requireAccess_(body) {
+  const expected=PropertiesService.getScriptProperties().getProperty('LEDGER_ACCESS_TOKEN');
+  if(!expected||expected.length<32||typeof body?.accessToken!=='string'||body.accessToken!==expected){
+    const error=new Error('Enter the correct ledger access token in Settings. Your pending uploads remain on this device.');
+    error.code='UNAUTHORIZED';throw error;
+  }
+}
+
 function validDate_(value) { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0,10) === value; }
 function integerValue_(value) { if (typeof value === 'number') return Number.isSafeInteger(value) ? value : NaN; if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) { const parsed=Number(value); return Number.isSafeInteger(parsed) ? parsed : NaN; } return NaN; }
 function validMinor_(value) { const amount=integerValue_(value); return amount>0 && amount<=100000000000; }
@@ -70,6 +80,7 @@ function validate_data_(t) {
   if (t.schemaVersion !== 1 || !Number.isSafeInteger(t.amountMinor) || t.amountMinor <= 0 || t.amountMinor > 100000000000 || t.currency !== 'INR') throw new Error('Invalid amount, currency or schema version.');
   if (!validDate_(t.transactionDate) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.transactionTime)) throw new Error('Invalid transaction date or time.');
   if (typeof t.party !== 'string' || t.party.length > 150 || typeof t.notes !== 'string' || t.notes.length > 1000 || typeof t.timezone !== 'string' || t.timezone.length > 100) throw new Error('Invalid name, notes or timezone.');
+  if(hasSettlement_(t)&&(!Number.isSafeInteger(t.settlementDiscountMinor)||t.settlementDiscountMinor<0||t.settlementDiscountMinor>100000000000||!t.partyId||t.direction!=='in'||t.category!=='Sale'||t.recordType&&t.recordType!=='payment'))throw new Error('Invalid full & final settlement discount.');
   if (t.recordType === 'adjustment') {
     const fields=['expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor'];
     const values=fields.map(key=>integerValue_(t[key]));
@@ -111,7 +122,7 @@ function doPost(e) {
   accountRequest_={startedAt:Date.now(),action:'unknown',lockWaitMs:0,reads:0,readMs:0,validationMs:0,writes:0,writeMs:0,tabs:new Map()};
   try {
     if (!e || !e.postData || e.postData.contents.length > 100000) throw new Error('Invalid request.');
-    const body = JSON.parse(e.postData.contents);accountRequest_.action=body.action;
+    const body = JSON.parse(e.postData.contents);requireAccess_(body);accountRequest_.action=body.action;
     if(body.action==='deletePayment'){if(!Number.isSafeInteger(body.transaction?._expectedRevision))throw new Error('Payment revision is required for bulk deletion.');body.action='delete';}
     if (body.action === 'list' || body.action === 'listDeleted') {
       const db = ensureSheet_(spreadsheet_());
@@ -128,6 +139,7 @@ function doPost(e) {
     {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
     const {sheet,headers} = ensureSheet_(spreadsheet_());
     const existing = records_(sheet,headers).find(row => row.id === t.id);
+    if(body.action==='update'&&hasSettlement_(existing)&&t.settlementDiscountMinor===undefined)throw new Error('Update the app before editing a full & final payment.');
     // Older clients must not silently detach a linked payment during edits.
     if (body.action === 'update' && existing?.partyId && t.partyId === undefined) throw new Error('Update the app before editing a party-linked payment.');
     if (body.action === 'create' || body.action === 'update') {
@@ -153,13 +165,14 @@ function doPost(e) {
       const reject = message => { const error = new Error(message); error.code = 'EDIT_CONFLICT'; throw error; };
       if (!existing || existing.deletedAt) reject('This payment no longer exists or has been deleted. Reload the latest records.');
       if (typeof t._editId !== 'string' || !/^[a-zA-Z0-9-]{20,80}$/.test(t._editId) || !Number.isSafeInteger(t._expectedRevision) || t._expectedRevision < 0) throw new Error('Invalid edit request.');
-      const fields = ['recordType','transactionDate','transactionTime','direction','category','method','amountMinor','currency','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod',...(t.recordType==='adjustment'?['expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor']:[])];
+      const fields = ['settlementDiscountMinor','recordType','transactionDate','transactionTime','direction','category','method','amountMinor','currency','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod',...(t.recordType==='adjustment'?['expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor']:[])];
       if (t.method !== 'Cheque') t.chequeDate = '';
       if (existing.lastEditId === t._editId) {
         if (fields.some(key => String(comparable_(existing,key)) !== String(comparable_(t,key)))) reject('This edit ID was already used for different changes.');
         return json_({ok:true,id:t.id,updated:true,transaction:existing});
       }
       if (Number(existing.revision || 0) !== t._expectedRevision) reject('This payment changed on another device. Reload it before editing again.');
+      if(hasSettlement_(t))validatePartySettlement_(t,existing.id);
       const ids = sheet.getRange(2,headers.indexOf('id')+1,sheet.getLastRow()-1,1).getValues();
       const rowIndex = ids.findIndex(row => row[0] === t.id)+2;
       const values = sheet.getRange(rowIndex,1,1,headers.length).getValues()[0];
@@ -191,11 +204,13 @@ function doPost(e) {
       return json_({ok:true,id:t.id,deleted:true});
     }
     if (existing) {
+      if(hasSettlement_(existing)!==hasSettlement_(t))throw new Error('This ID already belongs to a different settlement. Retry the original payment.');
       if (existing.deletedAt) throw new Error('This transaction has been deleted. It cannot be recreated with the same ID.');
-      const fields = ['recordType','amountMinor','transactionDate','transactionTime','direction','category','method','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor'];
+      const fields = ['settlementDiscountMinor','recordType','amountMinor','transactionDate','transactionTime','direction','category','method','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor'];
       if (fields.some(key => String(comparable_(existing,key) || '') !== String(comparable_(t,key) || ''))) throw new Error('This ID already belongs to a different payment.');
       return json_({ok:true,id:t.id,duplicate:true});
     }
+    if(hasSettlement_(t))validatePartySettlement_(t);
     t.createdAt = new Date().toISOString(); t.metadata = '{}'; t.deletedAt = ''; t.updatedAt = ''; t.revision = 0; t.lastEditId = ''; t.restoredAt = ''; t.lastRestoreDeletedAt = '';
     if (t.method !== 'Cheque') t.chequeDate = '';
     const row = headers.map(key => HEADERS.includes(key) ? (t[key] ?? '') : '');
@@ -323,6 +338,22 @@ function validatePaymentParty_(t) {
   const party=accountRows_(spreadsheet_(),'Parties').find(p=>p.id===t.partyId);
   if (!party || party.archivedAt) throw new Error('Party not found or archived. Refresh the party list.');
   if (t.transactionDate<party.openingDate) throw new Error('Party payments cannot predate the opening balance date.');
+}
+function hasSettlement_(t){return t?.settlementDiscountMinor!==undefined&&t.settlementDiscountMinor!==null&&t.settlementDiscountMinor!=='';}
+function validatePartySettlement_(t,excludeId){
+  const snapshot=accountAction_('listAccounts',{summary:true});
+  const party=snapshot.parties.find(p=>p.id===t.partyId&&!p.archivedAt);
+  if(!party)throw new Error('Choose an active party before settling.');
+  let balance=Number(party.openingBalanceMinor);
+  snapshot.invoices.filter(row=>row.partyId===party.id&&row.status==='issued').forEach(row=>{balance+=Number(row.totalMinor)*(row.type==='sale'?1:-1);});
+  snapshot.notes.filter(row=>row.partyId===party.id&&row.status==='issued').forEach(row=>{balance+=Number(row.amountMinor)*(row.type==='credit'?-1:1)*(row.invoiceType==='sale'?1:-1);});
+  const seen=new Set();
+  snapshot.transactions.filter(row=>row.partyId===party.id&&!row.deletedAt&&row.id!==excludeId).forEach(row=>{
+    if(seen.has(row.id))throw new Error('A linked payment is duplicated. Repair it before settling.');seen.add(row.id);
+    const payment={...row,schemaVersion:Number(row.schemaVersion),amountMinor:Number(row.amountMinor),...(hasSettlement_(row)?{settlementDiscountMinor:Number(row.settlementDiscountMinor)}:{})};validate_(payment);
+    balance+=payment.amountMinor*(payment.direction==='in'?-1:1)-Number(payment.settlementDiscountMinor||0);
+  });
+  if(!Number.isSafeInteger(balance)||balance<=0||!Number.isSafeInteger(t._expectedPartyBalanceMinor)||balance!==t._expectedPartyBalanceMinor||t.amountMinor+t.settlementDiscountMinor!==balance){const error=new Error('The party balance changed or is not receivable. Refresh and review the settlement before saving.');error.code='EDIT_CONFLICT';throw error;}
 }
 function normalizedInvoice_(t, allowBlankNumber=false){const started=Date.now();try{return normalizedInvoice_data_(t,allowBlankNumber);}finally{if(accountRequest_)accountRequest_.validationMs+=Date.now()-started;}}
 function normalizedInvoice_data_(t, allowBlankNumber=false) {

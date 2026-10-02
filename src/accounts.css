@@ -207,3 +207,16 @@
 
 .invoice-item-note{display:block;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:4px;font-size:11px}
 @media(max-width:760px){.invoice-item-fields>label:last-of-type{grid-column:1/-1}}
+
+.invoice-view-profit>.invoice-profit-breakdown{display:block;flex-basis:100%;max-width:440px;font-size:12px}
+.invoice-profit-breakdown dl{margin:0;border:1px solid #dfe8df;border-radius:8px;padding:12px}
+.invoice-profit-breakdown dl>div{display:flex;justify-content:space-between;gap:16px;margin:7px 0}
+.invoice-profit-breakdown dd{margin:0;text-align:right;font-weight:600}
+.invoice-profit-breakdown .invoice-final-profit{border-top:1px solid #dfe8df;padding-top:10px;font-weight:700}
+.invoice-profit-breakdown>small{display:block;color:#718079;line-height:1.5;margin-top:7px}
+[data-theme=dark] .invoice-profit-breakdown :is(dl,.invoice-final-profit){border-color:#3b5040}
+
+
+.payment-party-balance{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px solid #dce5dc;border-radius:8px;font-size:13px}.payment-party-balance strong{font-size:16px}.payment-party-balance small{flex-basis:100%;color:#617463;font-size:11px}[data-theme=dark] .payment-party-balance{border-color:#3b5141}[data-theme=dark] .payment-party-balance small{color:#b5c9b6}
+
+.full-final-payment{padding:12px;border:1px solid #dce5dc;border-radius:8px}.full-final-toggle{display:flex!important;align-items:center;gap:8px;font-size:13px!important}.full-final-toggle input{width:16px!important;height:16px;flex:none;accent-color:#315d42}.full-final-payment .payment-party-balance{margin-top:8px}[data-theme=dark] .full-final-payment{border-color:#3b5141}

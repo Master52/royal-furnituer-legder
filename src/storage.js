@@ -17,9 +17,10 @@ function openDatabase() {
     if (!('indexedDB' in window)) return reject(new Error('Browser storage unavailable'));
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Browser storage unavailable'));
-    request.onblocked = () => reject(new Error('Browser storage is blocked'));
+    let settled=false;
+    request.onsuccess = () => {if(settled)request.result.close();else {settled=true;resolve(request.result);}};
+    request.onerror = () => {settled=true;reject(request.error || new Error('Browser storage unavailable'));};
+    request.onblocked = () => {settled=true;reject(new Error('Browser storage is blocked'));};
   });
 }
 
@@ -61,10 +62,10 @@ export async function saveEndpoint(value) {
 }
 
 export async function clearEndpoint() {
-  try { localStorage.removeItem(ENDPOINT_KEY); } catch { /* Try IndexedDB below. */ }
-  try { await indexedDbRequest('readwrite', store => store.delete(ENDPOINT_KEY)); } catch {
-    if (readEndpoint()) throw new Error('Could not remove the saved connection. Check browser storage permissions.');
-  }
+  const operations=[Promise.resolve().then(()=>localStorage.removeItem(ENDPOINT_KEY))];
+  if('indexedDB' in window)operations.push(indexedDbRequest('readwrite',store=>store.delete(ENDPOINT_KEY)));
+  const results=await Promise.allSettled(operations);
+  if(results.some(result=>result.status==='rejected'))throw new Error('The saved connection could not be completely removed. Check browser storage permissions and retry.');
 }
 
 export async function loadTransactionCache(endpoint) {

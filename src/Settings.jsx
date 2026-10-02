@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { BACKEND_SOURCE, BUNDLED_BACKEND_VERSION } from './backend.js';
 import PreferencesPanel from './PreferencesPanel.jsx';
-
-function versionAtLeast(actual, required) {
-  if (typeof actual!=='string' || !/^\d+(\.\d+)*$/.test(actual)) return false;
-  const a=actual.split('.').map(Number),b=required.split('.').map(Number);
-  for(let i=0;i<Math.max(a.length,b.length);i++){if((a[i]||0)>(b[i]||0))return true;if((a[i]||0)<(b[i]||0))return false;}
-  return true;
-}
+import {versionAtLeast} from './version.js';
+import {downloadText} from './preferences.js';
+import {request, validateEndpoint, readAccessToken, accessTokenKey, ACCESS_CHANGED_EVENT} from './api.js';
 
 export default function Settings({ endpoint, info, synced, url, setUrl, connect, disconnect, busy, pending, preferences, savePreferences, range, exportCsv, deleted, loadDeleted, restore, feedback, openTweak }) {
   const [copyStatus, setCopyStatus] = useState('');
+  const [accessToken,setAccessToken]=useState(()=>endpoint?readAccessToken(endpoint):'');
+  const [accessError,setAccessError]=useState('');
+  const [accessNotice,setAccessNotice]=useState('');
+  const [accessBusy,setAccessBusy]=useState(false);
   const [tab,setTab] = useState(endpoint ? 'preferences' : 'connection');
   useEffect(()=>{
     if(tab!=='tweaks')return;
@@ -23,11 +23,17 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
     };
     window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
   },[tab,openTweak]);
-  function download() {
-    const objectUrl = URL.createObjectURL(new Blob([BACKEND_SOURCE], { type: 'text/plain;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = objectUrl; link.download = 'Code.gs';
-    document.body.appendChild(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  function download() {downloadText(BACKEND_SOURCE,'Code.gs');}
+  async function saveAccess(event) {
+    event.preventDefault();setAccessError('');setAccessNotice('');setAccessBusy(true);
+    try {
+      const destination=validateEndpoint((url||endpoint).trim()),token=accessToken.trim();
+      if(token.length<32||token.length>128)throw new Error('Enter the access token from Apps Script → Project Settings → Script Properties.');
+      const result=await request(destination,undefined,'list',{accessToken:token});
+      sessionStorage.setItem(accessTokenKey(destination),token);
+      window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT,{detail:{endpoint:destination}}));
+      setAccessNotice(versionAtLeast(result.backendVersion,'1.17.0')?'Access verified for this browser session.':'Token saved. Update Code.gs to 1.17.0 or newer to protect this deployment; older scripts do not verify tokens.');
+    }catch(error){setAccessError(error.message);}finally{setAccessBusy(false);}
   }
   async function copy() {
     try { await navigator.clipboard.writeText(BACKEND_SOURCE); setCopyStatus('Code copied. Paste it into the Apps Script editor.'); }
@@ -53,18 +59,20 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
     <section className="setup-step"><h3>2. Set up and deploy</h3><ol>
       <li>Set the Sheet’s timezone under <strong>File → Settings</strong> to match your shop.</li>
       <li>In Apps Script, select <strong>setup</strong> in the function dropdown and click <strong>Run</strong>. Review and grant the requested permissions. This creates Transactions and Report tabs.</li>
+      <li>Open <strong>Project Settings → Script Properties</strong> and copy <strong>LEDGER_ACCESS_TOKEN</strong>. setup creates this secret automatically. Keep it private.</li>
       <li>Click <strong>Deploy → New deployment → Web app</strong>.</li>
       <li>Choose <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong>, then click <strong>Deploy</strong>.</li>
       <li>Google generates a <strong>Web app URL</strong> ending in <strong>/exec</strong>. Copy that URL—not the spreadsheet URL or a /dev URL.</li>
     </ol></section>
+    <form className="setup-step" onSubmit={saveAccess}><h3>Ledger access</h3><label>Access token<input type="password" autoComplete="off" required minLength={32} maxLength={128} value={accessToken} onChange={event=>setAccessToken(event.target.value)} disabled={accessBusy}/></label><button className="outline full" disabled={accessBusy||!(endpoint||url)} aria-busy={accessBusy}>{accessBusy?'Verifying access…':'Verify & save access token'}</button>{accessError&&<p className="error" role="alert">{accessError}</p>}{accessNotice&&<p className="notice" role="status">{accessNotice}</p>}<p className="help">Required for Code.gs 1.17.0 and newer. Saved for this browser session only. Verifying access also retries uploads waiting for authorization.</p></form>
     <form className="setup-step" onSubmit={connect}><h3>3. Connect your sheet</h3><label>Apps Script web app URL<input required type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://script.google.com/macros/s/…/exec" disabled={busy}/></label>
-      <button className="primary full" disabled={busy || (!!pending && !!endpoint)}>{busy ? 'Checking connection…' : 'Test & save connection'}</button>
+      <button className="primary full" disabled={busy || accessBusy || (!!pending && !!endpoint)} aria-busy={busy}>{busy ? 'Checking connection…' : 'Test & save connection'}</button>
       {pending && <p className="help">{endpoint ? 'Resolve your pending payment before changing or disconnecting the sheet.' : 'A pending payment remains on this device. Connect its original sheet before retrying.'}</p>}
       <p className="help">The URL is saved only after a successful connection. It stays here after closing the browser, but does not transfer to another device, browser, or website address. Clearing site data removes it.</p>
     </form>
     <details className="setup-step"><summary>Update an existing script</summary><p>Download the included Code.gs, replace the old code in Apps Script, save, and run setup. Existing transactions are preserved. Then select <strong>Deploy → Manage deployments → Edit → New version → Deploy</strong>. Keep the same deployment URL. Test the saved connection again to see its new version.</p></details>
-    <details className="setup-step"><summary>Connection troubleshooting</summary><p>If you see “Failed to fetch” or a CORS error, open your /exec URL in an incognito window. It should show JSON, not a Google sign-in page. Confirm access is Anyone and that you deployed the latest version. Some work accounts restrict public web apps.</p><p>For report-date errors, run resetReportDates in Apps Script. This resets the report period to this month.</p></details>
-    <p className="help">Keep your Sheet private. This setup has no login: anyone who obtains the web app URL can read, add and delete its records. Browser storage keeps the URL out of the shared app code, but does not make it a password.</p>
+    <details className="setup-step"><summary>Connection troubleshooting</summary><p>If you see “Failed to fetch” or a CORS error, open your /exec URL in an incognito window. It should show an authentication-required JSON response, not a Google sign-in page. Verify your access token above. Confirm access is Anyone and that you deployed the latest version. Some work accounts restrict public web apps.</p><p>For report-date errors, run resetReportDates in Apps Script. This resets the report period to this month.</p></details>
+    <p className="help">Keep your Sheet private. Code.gs 1.17.0 requires your separate access token for every ledger request. Anyone with both the token and web app URL can access your records. Older deployments remain unprotected until updated. This is shared shop access, not individual user accounts.</p>
     {endpoint && <button type="button" className="outline full disconnect" disabled={busy || !!pending} onClick={disconnect}>Disconnect this browser</button>}
     </>}</>}
   </div>;

@@ -24,6 +24,7 @@ function TransactionContent({transaction,queued,duplicate=false}){
   if(adjustment){
     for(const [label,prefix] of [['Cash','Cash'],['Online','Online']])fields.push([`${label} expected`,money(transaction[`expected${prefix}Minor`])],[`${label} counted`,money(transaction[`counted${prefix}Minor`])],[`${label} adjustment`,money(transaction[`${label.toLowerCase()}AdjustmentMinor`])]);
   }
+  if(transaction.settlementDiscountMinor!==undefined&&transaction.settlementDiscountMinor!==null&&transaction.settlementDiscountMinor!=='')fields.push(['Full & final discount',money(transaction.settlementDiscountMinor)],['Total party balance settled',money(Number(transaction.amountMinor)+Number(transaction.settlementDiscountMinor))]);
   return <>
     {issue&&<p className="error" role="alert">{issue}</p>}
     <div className="transaction-detail-summary"><span>{type}</span><strong>{money(transaction.amountMinor)}</strong><small>{queued?queued._status==='failed'?'Upload failed · saved on this device':'Pending upload · saved on this device':'Recorded in the current ledger'}</small></div>

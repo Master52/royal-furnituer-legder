@@ -1,13 +1,16 @@
 import AccountDialog from './AccountDialog.jsx';
 import AccountsPanel from './AccountsPanel.jsx';
+import {partySettlementQuote,makePartySettlement} from './settlement.js';
 import useAccounts from './useAccounts.js';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
-import { categories, methods, money, localNow, periodRange, filterTransactions, makeTransaction, paymentMethodBalance, transactionIntegrityIssue, duplicateTransactionIds } from './ledger.js';
-import { request, validateEndpoint } from './api.js';
-import Settings from './Settings.jsx';
-import { backendInfo } from './backend.js';
+import { categories, methods, money, localNow, periodRange, filterTransactions, makeTransaction, paymentMethodBalance, transactionIntegrityIssue, duplicateTransactionIds,hasSettlement } from './ledger.js';
+import { request, validateEndpoint, serializeRequest, ACCESS_CHANGED_EVENT } from './api.js';
+import { backendInfo, versionAtLeast } from './version.js';
+import AppErrorBoundary from './AppErrorBoundary.jsx';
+import { PAYMENT_QUEUE_KEY, readPaymentQueue, mutatePaymentQueue } from './paymentQueue.js';
+const Settings = lazy(() => import('./Settings.jsx'));
 import { normalizePreferences, preferenceKey, entryDefaults, csvForTransactions, downloadText } from './preferences.js';
 import './styles.css';
 import './pwa.css';
@@ -30,22 +33,14 @@ import { applyQueuedOperation, overlayOutbox, queueRecord } from './outbox.js';
 
 function read(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function write(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
-const outboxKey='rf.outbox';
-function initialOutbox(){
-  const saved=read(outboxKey,[]);
-  const queue=Array.isArray(saved)?saved:[];
-  const legacy=read('rf.pending',null);
-  if(legacy&&!queue.some(item=>item.id===legacy.id&&item._editId===legacy._editId))queue.unshift({...legacy,_queueId:crypto.randomUUID(),_action:legacy._action||'create',_status:legacy._endpoint?'queued':'failed',_error:legacy._endpoint?undefined:'This saved payment has no recorded Sheet destination. Confirm the connected Sheet before retrying.',_errorCode:legacy._endpoint?undefined:'MISSING_ENDPOINT',_queuedAt:new Date().toISOString()});
-  return queue.map(item=>item._status==='uploading'?{...item,_status:item._endpoint?'queued':'failed',_error:item._endpoint?null:'This saved payment has no recorded Sheet destination. Confirm the connected Sheet before retrying.',_errorCode:item._endpoint?null:'MISSING_ENDPOINT'}:!item._endpoint&&item._status!=='failed'?{...item,_status:'failed',_error:'This saved payment has no recorded Sheet destination. Confirm the connected Sheet before retrying.',_errorCode:'MISSING_ENDPOINT'}:item);
-}
+const outboxKey = PAYMENT_QUEUE_KEY;
+const initialOutbox = () => readPaymentQueue(localStorage);
 
-function versionAtLeast(actual, required) {
-  if (typeof actual!=='string' || !/^\d+(\.\d+)*$/.test(actual)) return false;
-  const a=actual.split('.').map(Number),r=required.split('.').map(Number);
-  for(let i=0;i<Math.max(a.length,r.length);i++){if((a[i]||0)>(r[i]||0))return true;if((a[i]||0)<(r[i]||0))return false;}
-  return true;
+async function checkedSettlementSnapshot(request) {
+  let timer;
+  try{return await Promise.race([request,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Google Sheets is taking too long. Your entries are kept; retry saving.')),15000);})]);}
+  finally{clearTimeout(timer);}
 }
-
 function App() {
   const pendingKey = 'rf.pending';
   const brandLogo = new URL('icons/royal-logo.png', document.baseURI).href;
@@ -88,6 +83,7 @@ function App() {
   const [synced, setSynced] = useState(false);
   const [view, setView] = useState('dashboard');
   const [paymentOpen,setPaymentOpen] = useState(false);
+  useEffect(()=>{if(paymentOpen)accounts.refreshIfStale();},[paymentOpen,accounts.refreshIfStale]);
   useEffect(()=>{if(['accounts','dashboard','history'].includes(view))accounts.refreshIfStale();},[view,accounts.refreshIfStale]);
   const [printingTransactions,setPrintingTransactions]=useState(false);
   useEffect(()=>{const before=()=>{if(!document.body.dataset.accountPrint)flushSync(()=>setPrintingTransactions(true));};const after=()=>setPrintingTransactions(false);window.addEventListener('beforeprint',before);window.addEventListener('afterprint',after);return()=>{window.removeEventListener('beforeprint',before);window.removeEventListener('afterprint',after);};},[]);
@@ -99,15 +95,46 @@ function App() {
   const amountRef = useRef(null);
   const formRef = useRef(null);
   const lock = useRef(false);
+  const savingPayment = useRef(false);
   const refreshInFlight=useRef(false);
   const outboxProcessing=useRef(false);
-  function persistOutbox(queue) {
-    try { write(outboxKey,queue); setOutbox(queue); try { localStorage.removeItem(pendingKey); } catch { /* The durable outbox write already succeeded. */ } return true; }
-    catch { setError('Could not save the upload queue on this device. Check browser storage and try again.'); return false; }
+  async function persistOutbox(change) {
+    try {
+      const next = await mutatePaymentQueue(localStorage, change);
+      outboxRef.current = next;
+      setOutbox(next);
+      return true;
+    } catch (error) {
+      setError('Could not save the upload queue on this device. '+(error.message||'Check browser storage and retry.')+' Your entry has not been discarded.');
+      return false;
+    }
   }
+  useEffect(() => {
+    const changed = event => {
+      if (event.key !== null && event.key !== outboxKey && event.key !== pendingKey) return;
+      try { const next=initialOutbox();const removed=outboxRef.current.some(item=>!next.some(value=>value._queueId===item._queueId));outboxRef.current=next;setOutbox(next);setRows(previous=>overlayOutbox(previous,next,endpointRef.current));if(removed)refresh(endpointRef.current); }
+      catch (error) { setError(error.message); }
+    };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  });
+  const [uploadTick, setUploadTick] = useState(0);
+  useEffect(() => {
+    const changed = event => {
+      if (event.detail?.endpoint !== endpointRef.current) return;
+      const first = outboxRef.current[0];
+      if (first?._errorCode === 'UNAUTHORIZED') {
+        void persistOutbox(queue => queue.map(item => item._queueId === first._queueId ? {...item,_status:'queued',_error:null,_errorCode:null} : item));
+      }
+      refresh(endpointRef.current);
+    };
+    window.addEventListener(ACCESS_CHANGED_EVENT, changed);
+    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, changed);
+  });
   const dialog = useRef(null);
   const duplicateIds=useMemo(()=>duplicateTransactionIds(rows),[rows]);
   const calculationRows=useMemo(()=>rows.filter(t=>!duplicateIds.has(t.id)),[rows,duplicateIds]);
+  const confirmedTransactions=useMemo(()=>{const ids=new Set(outbox.map(item=>item.id));return calculationRows.filter(row=>!ids.has(row.id));},[calculationRows,outbox]);
   const allTimePaymentMethodSummary = useMemo(()=>paymentMethodBalance(calculationRows),[calculationRows]);
   const expectedCash=allTimePaymentMethodSummary.Cash;
   const expectedOnline=allTimePaymentMethodSummary.Online;
@@ -239,32 +266,45 @@ function App() {
   }, []);
   useEffect(() => {
     if (!connectionRestored || !endpoint || busy || refreshing || outboxProcessing.current || !outbox.length || outbox[0]._status === 'failed') return;
-    const first = outbox[0];
-    if (first._endpoint && first._endpoint !== endpoint) return;
+    if (outbox[0]._endpoint !== endpoint) return;
     outboxProcessing.current = true;
-    persistOutbox(outbox.map((item,index)=>index===0?{...item,_status:'uploading',_error:null}:item));
     (async () => {
-      try {
-        const payload=queueRecord(first);
-        const result=await request(endpoint,payload,first._action || 'create');
-        if(first._action==='delete') {
-          if(result.id!==first.id||result.deleted!==true)throw new Error('Delete was not confirmed by Google Sheets.');
-          setRows(previous=>previous.filter(row=>row.id!==first.id));
-        } else {
-          if(result.id!==first.id)throw new Error('Save confirmation did not match this transaction.');
-          if(first._action==='update'&&(!result.updated||result.transaction?.id!==first.id))throw new Error('Edit was not confirmed. Update Code.gs and retry.');
-          if(result.transaction)setRows(previous=>[...previous.filter(row=>row.id!==first.id),result.transaction]);
+      if (!navigator.locks) throw new Error('This browser cannot safely coordinate uploads between tabs. Use a browser with Web Locks support.');
+      await navigator.locks.request('rf.accounts.upload', async () => {
+        const first = initialOutbox()[0];
+        if (!first || first._status === 'failed' || first._endpoint !== endpoint || endpointRef.current !== endpoint) return;
+        if (!await persistOutbox(queue => queue.map(item => item._queueId === first._queueId ? {...item,_status:'uploading',_error:null} : item))) {
+          outboxRef.current = outboxRef.current.map(item => item._queueId === first._queueId ? {...item,_status:'failed',_error:'Local storage could not be updated. Retry after checking browser storage.'} : item);
+          setOutbox(outboxRef.current);
+          return;
         }
-        const remaining=outboxRef.current.filter(item=>item._queueId!==first._queueId);
-        persistOutbox(remaining);if(!remaining.length)accounts.reload({fresh:true});setSynced(true);setNotice(`${first._action==='delete'?'Transaction deleted':first._action==='update'?'Changes saved':'Transaction saved'} to Google Sheets.`);
-      } catch(e) {
-        {
-          const latest=outboxRef.current.map((item,index)=>index===0?{...item,_status:'failed',_error:e.message,_errorCode:e.code}:item);
-          persistOutbox(latest);setSynced(false);if(e.code==='EDIT_CONFLICT')setEditConflict(true);
+        try {
+          const result = await request(endpoint, queueRecord(first), first._action || 'create');
+          if (first._action === 'delete') {
+            if (result.id !== first.id || result.deleted !== true) throw new Error('Delete was not confirmed by Google Sheets.');
+            setRows(previous => previous.filter(row => row.id !== first.id));
+          } else {
+            if (result.id !== first.id) throw new Error('Save confirmation did not match this transaction.');
+            if (first._action === 'update' && (!result.updated || result.transaction?.id !== first.id)) throw new Error('Edit was not confirmed. Update Code.gs and retry.');
+            if (result.transaction) setRows(previous => [...previous.filter(row => row.id !== first.id), result.transaction]);
+          }
+          if (!await persistOutbox(queue => queue.filter(item => item._queueId !== first._queueId))) throw new Error('Google Sheets saved this payment, but the local queue could not be updated. Retry to confirm it.');
+          if (!outboxRef.current.length) accounts.reload({fresh:true});
+          setSynced(true);
+          setNotice(`${first._action === 'delete' ? 'Transaction deleted' : first._action === 'update' ? 'Changes saved' : 'Transaction saved'} to Google Sheets.`);
+        } catch (error) {
+          const failed = queue => queue.map(item => item._queueId === first._queueId ? {...item,_status:'failed',_error:error.message,_errorCode:error.code} : item);
+          if (!await persistOutbox(failed)) {outboxRef.current = failed(outboxRef.current); setOutbox(outboxRef.current);}
+          setSynced(false);
+          if (error.code === 'EDIT_CONFLICT') setEditConflict(true);
         }
-      } finally { outboxProcessing.current=false; }
-    })();
-  },[outbox,endpoint,connectionRestored,busy,refreshing]);
+      });
+    })().catch(error => {
+      setError(error.message);
+      outboxRef.current = outboxRef.current.map(item => ({...item,_status:'failed',_error:error.message}));
+      setOutbox(outboxRef.current);
+    }).finally(() => {outboxProcessing.current = false; setUploadTick(value => value + 1);});
+  }, [outbox, endpoint, connectionRestored, busy, refreshing, uploadTick]);
   useEffect(()=>{ document.documentElement.dataset.theme=preferences.theme; document.documentElement.dataset.textSize=preferences.largeText?'large':'normal'; document.documentElement.dataset.printNotes=String(preferences.printNotes); document.title=preferences.shopName+' | Shop Ledger'; const description=document.querySelector('meta[name="description"]'); if(description) description.content='Royal Furnitures — Apne Gar ko do ROYAL touch sirf Royal Furnitures se. Shop ledger for payments, purchases, transport and expenses.'; },[preferences]);
   useEffect(() => {
     // The startup screen does not mount the dialog until restoration finishes.
@@ -293,17 +333,19 @@ function App() {
     setEditing({...transaction,_endpoint:endpoint}); setForm(editEntry(transaction)); setPaymentOpen(true); setError(''); setNotice(''); focusAmount();
   }
   async function reloadConflictedEdit() {
-    if (lock.current || !pending || outbox.length>1 || !window.confirm('Discard this attempted edit and load the latest saved payment?')) return;
+    const settlementCreate=pending?._action==='create'&&hasSettlement(pending);
+    if (lock.current || !pending || outbox.length>1 || !window.confirm(settlementCreate?'Review this rejected settlement with the latest party balance? Your entered payment will be kept.':'Discard this attempted edit and load the latest saved payment?')) return;
     lock.current=true;setBusy(true);
     try {
-      const result=await request(endpoint);
+      const result=settlementCreate?await checkedSettlementSnapshot(accounts.reload({fresh:true})):await request(endpoint);
+      if(!result)throw new Error('Could not check the saved payment. The queued request is kept.');
       const latest=result.transactions.find(t=>t.id===pending.id);
-      persistOutbox([]);setEditConflict(false);setRows(result.transactions);
-      setEditing(latest ? {...latest,_endpoint:endpoint} : null);setForm(latest ? editEntry(latest) : newEntry());setPaymentOpen(true);setError('');
-      setNotice(latest?'Latest payment loaded. Review and save your changes.':'This payment was deleted. Your attempted edit was not applied.');
+      if(!await persistOutbox(queue=>queue.filter(item=>item._queueId!==pending._queueId)))return;setEditConflict(false);setRows(result.transactions);
+      setEditing(latest ? {...latest,_endpoint:endpoint} : null);setForm(latest ? editEntry(latest) : settlementCreate?editEntry(pending):newEntry());setPaymentOpen(true);setError('');
+      setNotice(latest?'Latest payment loaded. Review and save your changes.':settlementCreate?'Settlement was not saved. Your final payment is kept; review the updated discount and save again.':'This payment was deleted. Your attempted edit was not applied.');
     } catch(e) {setError(e.message);} finally {lock.current=false;setBusy(false);}
   }
-  function chooseCategory(value) { setForm(previous => ({...previous,category:value,direction:previous.explicitChoices?previous.direction:value==='Sale'?'in':'out'})); }
+  function chooseCategory(value) { setForm(previous => ({...previous,fullFinal:false,category:value,direction:previous.explicitChoices?previous.direction:value==='Sale'?'in':'out'})); }
   function changeRecordType(value) {
     setForm(previous=>value==='transfer'
       ? {...previous,recordType:'transfer',category:'Transfer',direction:'transfer',method:'Transfer'}
@@ -362,13 +404,31 @@ function App() {
   function selectPeriod(value) { setPeriod(value); if (value !== 'custom') setRange(periodRange(value)); }
   async function save(event, retry = false) {
     event?.preventDefault();
-    if (lock.current || (outbox[0]?._status==='failed' && !retry)) return;
+    if (lock.current || savingPayment.current || (outbox[0]?._status==='failed' && !retry)) return;
     setError('');
     if (!endpoint) { setError('Connect Google Sheets in settings before recording a payment.'); return; }
     let transaction;
+    savingPayment.current=true;
     try {
-      transaction = makeTransaction({...form,dateTime:form.customDate?form.dateTime:localNow(),expectedCashMinor:expectedCashForEntry,expectedOnlineMinor:expectedOnlineForEntry}, editing?.id);
+      if(form.fullFinal){
+        if(!versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.16.0'))throw new Error('Update the Sheet backend to 1.16.0 before recording a full & final payment.');
+        if(outboxRef.current.length||accounts.pending)throw new Error('Finish pending uploads before settling this party.');
+        const displayed=partySettlementQuote(accounts,form.partyId,editing);
+        lock.current=true;setBusy(true);
+        try{
+          const snapshot=await checkedSettlementSnapshot(accounts.reload({fresh:true}));
+          if(!snapshot)throw new Error('Could not check the latest party balance. Your entries are kept; retry.');
+          const current=partySettlementQuote(snapshot,form.partyId,editing);
+          if(current.balance!==displayed.balance)throw new Error('The party balance changed. Review the updated discount before saving.');
+          transaction=makePartySettlement(snapshot,{...form,dateTime:form.customDate?form.dateTime:localNow()},editing?.id,editing);
+          if(!window.confirm(`Receive ${money(transaction.amountMinor)} and waive ${money(transaction.settlementDiscountMinor)} to settle ${current.party.name}’s ${money(current.balance)} balance?`))return;
+        }finally{lock.current=false;setBusy(false);}
+      }else transaction = makeTransaction({...form,dateTime:form.customDate?form.dateTime:localNow(),expectedCashMinor:expectedCashForEntry,expectedOnlineMinor:expectedOnlineForEntry}, editing?.id);
       if (!transaction) return;
+      if(editing&&hasSettlement(editing)&&!form.fullFinal){
+        if(!window.confirm('Remove this payment’s full & final discount? The waived amount will return to the party balance.'))return;
+        transaction.settlementDiscountMinor='';
+      }
       if (transaction.partyId && !accountsEnabled) throw new Error('Update the Sheet backend to 1.8.0 before saving party-linked payments.');
       if ((transaction.recordType==='transfer' || Number(transaction.onlineChangeMinor||0)>0 || Number(transaction.cashChangeMinor||0)>0) && !versionAtLeast(connectionInfo?.version,'1.4.0')) throw new Error('Update Code.gs to version 1.4.0 before saving a cash/online exchange or a sale with change. Open Settings → Google Sheets setup, copy the included Code.gs, replace the Apps Script, and deploy a new version.');
       if (transaction.recordType==='adjustment' && !versionAtLeast(connectionInfo?.version,'1.6.0')) throw new Error('Update Code.gs to version 1.6.0 before saving cashflow adjustments. Open Settings → Google Sheets setup, copy the included Code.gs, replace the Apps Script, and deploy a new version.');
@@ -378,19 +438,19 @@ function App() {
         transaction = {...transaction,_action:'update',_editId:crypto.randomUUID(),_expectedRevision:Number(editing.revision || 0)};
       }
       transaction = { ...transaction, _endpoint: endpoint, _action:transaction._action||'create', _queueId:crypto.randomUUID(), _status:'queued', _queuedAt:new Date().toISOString() };
-      const next=[...outboxRef.current,transaction];
-      if(!persistOutbox(next))return;
+      serializeRequest(endpoint,queueRecord(transaction),transaction._action);
+      if(!await persistOutbox(queue=>[...queue,transaction]))return;
       setRows(previous=>applyQueuedOperation(previous,transaction));
       setEditing(null);setEditConflict(false);setForm(newEntry(transaction));setNotice('Saved on this device. Uploading to Google Sheets…');setPaymentOpen(false);
-    } catch (e) { setError(e.message); return; }
+    } catch (e) { setError(e.message); return; } finally {savingPayment.current=false;}
   }
-  function retryUpload() {
+  async function retryUpload() {
     const first=outboxRef.current[0];
     if(!first||first._status!=='failed')return;
     if(first._endpoint&&first._endpoint!==endpoint){setError('Reconnect the original Sheet before retrying this queued transaction.');return;}
     if(!first._endpoint&&!window.confirm('This saved payment has no recorded Sheet destination. Confirm that the currently connected Google Sheet is its intended destination before uploading.'))return;
     setEditConflict(first._errorCode==='EDIT_CONFLICT');
-    persistOutbox(outboxRef.current.map((item,index)=>index===0?{...item,_endpoint:endpoint,_status:'queued',_error:null,_errorCode:null}:item));
+    if(!await persistOutbox(queue=>queue.map(item=>item._queueId===first._queueId?{...item,_endpoint:endpoint,_status:'queued',_error:null,_errorCode:null}:item)))return;
     setError('');setNotice('Retrying upload to Google Sheets…');
   }
   async function connect(event) {
@@ -446,10 +506,10 @@ function App() {
     if (lock.current || outbox.some(item=>item.id===transaction.id)) return;
     if (!window.confirm(`Delete ${money(transaction.amountMinor)} · ${transaction.party || transaction.category} on ${transaction.transactionDate}? This removes it from your ledger and reports.`)) return;
     const operation={id:transaction.id,_action:'delete',_endpoint:endpoint,_queueId:crypto.randomUUID(),_status:'queued',_queuedAt:new Date().toISOString()};
-    if(!persistOutbox([...outboxRef.current,operation]))return;
+    if(!await persistOutbox(queue=>queue.some(item=>item.id===operation.id)?queue:[...queue,operation]))return;
     setRows(previous=>applyQueuedOperation(previous,operation));setNotice('Deleted on this device. Uploading deletion to Google Sheets…');
   }
-  const update = (key, value) => setForm(previous => ({ ...previous, [key]: value }));
+  const update = (key,value) => setForm(previous=>key==='fullFinal'?{...previous,fullFinal:value,...(value?{direction:'in',category:'Sale'}:{})}:{...previous,...(['partyId','direction'].includes(key)?{fullFinal:false}:{}),[key]:value});
   const invocation=<div className="app-invocation" lang="ar" dir="rtl">بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ</div>;
   if (!connectionRestored) return <>{invocation}<main className="startup-loading" role="status">Restoring your saved Google Sheets connection…</main></>;
   return <>
@@ -467,22 +527,22 @@ function App() {
       {paymentOpen&&<AccountDialog className="payment-dialog" title={editing?'Edit payment':form.recordType==='transfer'?'Cash ↔ Online exchange':form.recordType==='adjustment'?'Adjust a balance':form.partyId?`${form.direction==='in'?'Receive payment':form.direction==='out'?'Make payment':'Record payment'} · ${form.party}`:'Record Payment'} busy={busy} onClose={closePayment}>
         {error&&<p className="error" role="alert">{error}</p>}
         {pending?._status==='failed'&&<div className="account-pending" role="alert"><p>{pending._error||'A payment could not upload. Retry it before adding another.'}</p><button type="button" className="outline" onClick={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload}>{editConflict&&outbox.length===1?'Reload latest':'Retry upload'}</button></div>}
-        <PaymentEntry compact parties={accounts.parties} accountsEnabled={accountsEnabled} editing={editing} cancelEdit={closePayment} returnToPayment={startNew} form={form} update={update} chooseCategory={chooseCategory} save={save} formRef={formRef} amountRef={amountRef} busy={busy} refreshing={refreshing} pending={pending} endpoint={endpoint} rows={rows} refresh={refresh} openHistory={()=>{closePayment();setView('history');}} focusAndCenter={focusAndCenter} expectedCashMinor={expectedCashForEntry} expectedOnlineMinor={expectedOnlineForEntry}/>
+        <PaymentEntry compact parties={accounts.parties} partyBalances={accounts.partyBalances} balancesLoaded={accounts.loaded} balancesCached={accounts.cached} balancesRefreshing={accounts.refreshing} fullFinalEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.16.0')} settlementBlocked={!!pending||!!accounts.pending||accounts.busy} accountsEnabled={accountsEnabled} editing={editing} cancelEdit={closePayment} returnToPayment={startNew} form={form} update={update} chooseCategory={chooseCategory} save={save} formRef={formRef} amountRef={amountRef} busy={busy} refreshing={refreshing} pending={pending} endpoint={endpoint} rows={rows} refresh={refresh} openHistory={()=>{closePayment();setView('history');}} focusAndCenter={focusAndCenter} expectedCashMinor={expectedCashForEntry} expectedOnlineMinor={expectedOnlineForEntry}/>
       </AccountDialog>}
       <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel itemDescriptionsEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.2')} measurementEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.0')} openingBalanceDeletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.1')} challanEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.13.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.12.0')} deletionEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.11.0')} noteOpenRequest={noteOpenRequest} notesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.10.0')} invoiceEditingEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.9.0')} invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
       <div className={`report-view ${view==='accounts'?'screen-hidden':''}`}>
       <section className="period-bar"><div><span className="calendar-icon">▦</span><select aria-label="Report period" value={period} onChange={e => selectPeriod(e.target.value)}><option value="month">This month</option><option value="today">Today</option><option value="last">Last month</option><option value="custom">Custom period</option></select></div><div className="date-range"><input aria-label="Start date" type="date" value={range[0]} onChange={e => {setPeriod('custom');setRange([e.target.value,range[1]]);}}/><span>—</span><input aria-label="End date" type="date" value={range[1]} onChange={e => {setPeriod('custom');setRange([range[0],e.target.value]);}}/></div><button className="refresh" disabled={busy || refreshing || !endpoint} onClick={() => {refresh();}}>{refreshing ? '◌ Updating…' : '↻ Refresh'}</button></section>
       {range[0] > range[1] && <p className="error">The start date must be on or before the end date.</p>}
-      {view==='dashboard'&&<DashboardOverview onCategory={name=>{setHistoryCategory(name);setMethod('');setQuery('');setView('history');}} accounts={accounts} transactions={calculationRows.filter(row=>!outbox.some(op=>op.id===row.id))} range={range} cash={expectedCash} online={expectedOnline}/>}
+      {view==='dashboard'&&<DashboardOverview onCategory={name=>{setHistoryCategory(name);setMethod('');setQuery('');setView('history');}} accounts={accounts} transactions={confirmedTransactions} range={range} cash={expectedCash} online={expectedOnline}/>}
       {view==='history'&&<section className="history-controls"><div className="history-category-tabs" role="group" aria-label="Transaction category">{['',...categories].map(value=><button key={value||'all'} data-tone={value==='Sale'?'sale':value==='Purchase'?'purchase':undefined} type="button" className={historyCategory===value?'active':''} aria-pressed={historyCategory===value} onClick={()=>setHistoryCategory(value)}>{value||'All'}</button>)}</div><div className="activity-filters"><input type="search" aria-label="Search history" placeholder="Search party, reference, challan, item or notes…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Filter payment method" value={method} onChange={e=>setMethod(e.target.value)}><option value="">All payment methods</option>{methods.map(value=><option key={value}>{value}</option>)}<option value="Transfer">Cash/Online exchange</option><option value="Adjustment">Cashflow adjustment</option></select><button type="button" className="outline" onClick={()=>window.print()}>Print history</button></div></section>}
       <ActivityTable key={view} accounts={accounts} transactions={rows} outbox={outbox} range={range} category={view==='history'?historyCategory:''} method={view==='history'?method:''} query={view==='history'?query:''} history={view==='history'} printing={printingTransactions} editingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.9.0')} deletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.11.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.12.0')} bulkDeleteEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.0')&&!outbox.length} onBulkDelete={bulkDelete} paymentBusy={busy||!endpoint||!!accounts.pending} onOpen={row=>openActivity(row)} onEdit={row=>openActivity(row,'edit')} onDelete={row=>openActivity(row,'delete')} onPrint={row=>openActivity(row,'print')} onHistory={()=>{setHistoryCategory('');setView('history');}}/>
       </div><footer>{preferences.shopName}<a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
     </main>
     <nav className="mobile-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History']].map(([key,icon,label])=><button key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button onClick={openSettings}><span>⚙</span>Settings</button></nav>
-    <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><p className="eyebrow">SHOP LEDGER</p><h2>Settings & sheet setup</h2></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
-      {modal && <Settings preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy} pending={pending||accounts.pending} openTweak={openTweak}/>}
+    <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} aria-labelledby="settings-title" onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><p className="eyebrow">SHOP LEDGER</p><h2 id="settings-title">Settings & sheet setup</h2></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
+      {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy} pending={pending||accounts.pending} openTweak={openTweak}/></Suspense>}
 
     </dialog>
   </>;
 }
-createRoot(document.getElementById('root')).render(<App/>);
+createRoot(document.getElementById('root')).render(<AppErrorBoundary><App/></AppErrorBoundary>);

@@ -3,6 +3,17 @@ export function validateEndpoint(value) {
   if (url.origin !== 'https://script.google.com' || !/^\/macros\/s\/[\w-]+\/exec$/.test(url.pathname) || url.search || url.hash) throw new Error('Use the deployed Apps Script URL ending in /exec.');
   return url.href;
 }
+export const MAX_REQUEST_CHARS = 100000;
+export const ACCESS_CHANGED_EVENT = 'rf:access-changed';
+export const accessTokenKey = endpoint => `rf.access-token:${validateEndpoint(endpoint)}`;
+export function readAccessToken(endpoint) {
+  try { return sessionStorage.getItem(accessTokenKey(endpoint)) || ''; } catch { return ''; }
+}
+export function serializeRequest(endpoint, transaction, action = 'create', accessToken = readAccessToken(endpoint)) {
+  const body = JSON.stringify({action:transaction ? action : 'list',transaction:transaction ?? {},...(accessToken ? {accessToken} : {})});
+  if (body.length > MAX_REQUEST_CHARS) throw new Error('This record contains too much detail for Google Sheets. Split the invoice into smaller invoices before saving.');
+  return body;
+}
 // Apps Script may spend 25 seconds waiting for its write lock before doing work.
 export const REQUEST_TIMEOUT_MS = 60000;
 const READ_ACTIONS = new Set(['list', 'listDeleted', 'listAccounts', 'getInvoices']);
@@ -19,15 +30,14 @@ function connectionError(message, retryable = false) {
   return error;
 }
 export function createRequest({fetchImpl = (...args) => fetch(...args), wait = ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutSignal = ms => AbortSignal.timeout(ms)} = {}) {
-  return async function request(endpoint, transaction, action = 'create') {
+  return async function request(endpoint, transaction, action = 'create', options = {}) {
     validateEndpoint(endpoint);
     // Serialize once: an ambiguous upload must retry the same ID and edit token.
-    const body = transaction ? JSON.stringify({action, transaction}) : null;
+    const body = serializeRequest(endpoint, transaction, action, options.accessToken ?? readAccessToken(endpoint));
     for (let attempt = 0; ; attempt++) {
       try {
-        const options = {redirect:'follow', cache:'no-store', credentials:'omit', signal:timeoutSignal(REQUEST_TIMEOUT_MS)};
-        if (body !== null) Object.assign(options, {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body});
-        const response = await fetchImpl(endpoint, options);
+        const fetchOptions = {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body, redirect:'follow', cache:'no-store', credentials:'omit', signal:timeoutSignal(REQUEST_TIMEOUT_MS)};
+        const response = await fetchImpl(endpoint, fetchOptions);
         if ([401,403].includes(response.status) || /accounts\.google\.com/.test(response.url || '')) {
           throw connectionError('Google requires permission to access this deployment. Check Apps Script deployment access and authorize the script owner; refreshing cannot fix permissions.');
         }

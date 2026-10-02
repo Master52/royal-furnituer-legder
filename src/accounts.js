@@ -1,5 +1,5 @@
 import {scaledInput,draftMeasurements,billingQuantity_,billingPrice_,measurementDraftFromItem} from './measurements.js';
-import { localNow, transactionIntegrityIssue, duplicateTransactionIds, SHOP_TIMEZONE } from './ledger.js';
+import { localNow, transactionIntegrityIssue, duplicateTransactionIds, hasSettlement, SHOP_TIMEZONE } from './ledger.js';
 
 export const ACCOUNTS_VERSION = '1.8.0';
 export const MAX_MINOR = 100000000000;
@@ -100,6 +100,7 @@ export function partyStatement(party, invoices, transactions, start = '0000-01-0
   for (const t of transactions) {
     if (t.partyId !== party.id || t.deletedAt || (t.recordType && t.recordType !== 'payment')) continue;
     if (duplicates.has(t.id) || transactionIntegrityIssue(t)) throw new Error('A linked payment is invalid or duplicated. Correct it before using this party balance.');
+    if(hasSettlement(t)&&Number(t.settlementDiscountMinor)>0)events.push({id:`${t.id}-settlement`,date:t.transactionDate,sort:`${t.transactionTime.length===5?t.transactionTime+':00':t.transactionTime}-${t.createdAt||''}-${t.id}-settlement`,description:'Full & final settlement discount',notes:t.notes,delta:-Number(t.settlementDiscountMinor)});
     events.push({ id: t.id, date: t.transactionDate, sort: `${t.transactionTime.length === 5 ? t.transactionTime + ':00' : t.transactionTime}-${t.createdAt || ''}-${t.id}`, description: `Payment ${t.direction === 'in' ? 'received' : 'made'} · ${t.method}`, notes: t.notes, delta: Number(t.amountMinor) * (t.direction === 'in' ? -1 : 1) });
   }
   events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort));
@@ -147,7 +148,7 @@ export function accountBalances(parties,invoices,transactions,notes=[]){
     const row=rows.get(payment.partyId);
     if(!row||payment.deletedAt||payment.recordType&&payment.recordType!=='payment')continue;
     if(duplicates.has(payment.id)||transactionIntegrityIssue(payment)){row.error='A linked payment is invalid or duplicated.';continue;}
-    row.balance+=Number(payment.amountMinor)*(payment.direction==='in'?-1:1);
+    row.balance+=Number(payment.amountMinor)*(payment.direction==='in'?-1:1)-Number(payment.settlementDiscountMinor||0);
   }
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }

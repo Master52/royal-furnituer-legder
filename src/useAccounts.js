@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { request } from './api.js';
+import { request, serializeRequest, ACCESS_CHANGED_EVENT } from './api.js';
 import { accountBalances } from './accounts.js';
 import { loadAccountCache, saveAccountCache } from './storage.js';
 const EMPTY_NOTES=[];
@@ -15,6 +15,7 @@ export default function useAccounts(endpoint, enabled) {
   const pending=queue[0]||null;
   const [rejected,setRejected] = useState(false);
   const [lastInvoice,setLastInvoice] = useState(null);
+  const [uploadTick,setUploadTick] = useState(0);
   const queueRef=useRef(queue);queueRef.current=queue;
   function syncQueue(next){queueRef.current=next;setQueue(next);}
   async function updateQueue(change){
@@ -139,7 +140,7 @@ export default function useAccounts(endpoint, enabled) {
   function applyRecord(action,record){
     const current=snapshotRef.current;
     if(!current||current.endpoint!==endpoint||!record?.id)return false;
-    const collection=action.includes('Note')?'notes':action.includes('Party')?'parties':'invoices';
+    const collection=action==='create'?'transactions':action.includes('Note')?'notes':action.includes('Party')?'parties':'invoices';
     const previous=(current.data[collection]||[]).find(item=>item.id===record.id);
     const value={...previous,...record};
     if(collection==='invoices'&&!Array.isArray(value.items))return false;
@@ -167,9 +168,9 @@ export default function useAccounts(endpoint, enabled) {
         if(operation.action==='deletePayment'){
           if(result.deleted!==true)throw new Error('Payment deletion was not confirmed.');
           const current=snapshotRef.current;const next={...current,data:{...current.data,transactions:current.data.transactions.filter(row=>row.id!==operation.payload.id)}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
-        }else if(!applyRecord(operation.action,record)){
+        }else if(!applyRecord(operation.action,operation.action==='create'?result.transaction:record)){
           const refreshed=await reload({fresh:true});
-          record=operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
+          record=operation.action==='create'?refreshed?.transactions.find(item=>item.id===operation.payload.id):operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
           if(!record)throw new Error('Upload was acknowledged. Retry to confirm the saved record.');
         }
         if(operation.action==='deleteInvoice')setLastInvoice(previous=>previous?.id===record.id?null:previous);
@@ -177,35 +178,46 @@ export default function useAccounts(endpoint, enabled) {
         await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(operation)));
         return true;
       }catch(error){
-        const failure={message:error.message,rejected:!acknowledged&&Boolean(error.code)};
+        const failure={message:error.message,code:error.code,rejected:!acknowledged&&Boolean(error.code)&&error.code!=='UNAUTHORIZED'};
         setRejected(failure.rejected);setError(failure.message);
-        try{await updateQueue(items=>items.map(item=>operationKey(item)===operationKey(operation)?{...item,failure}:item));}catch{/* Keep the original durable request if storage is full. */}
+        const failed=items=>items.map(item=>operationKey(item)===operationKey(operation)?{...item,failure}:item);
+        try{await updateQueue(failed);}catch{syncQueue(failed(queueRef.current));}
         return false;
       }
-    });}finally{working.current=false;setBusy(false);}
+    });}catch(error){
+      const failure={message:error.message||'The upload could not start. Your saved request remains on this device.',rejected:false};
+      setError(failure.message);
+      const failed=items=>items.map(item=>operationKey(item)===operationKey(operation)?{...item,failure}:item);
+      try{await updateQueue(failed);}catch{syncQueue(failed(queueRef.current));}
+      return false;
+    }finally{working.current=false;setBusy(false);setUploadTick(value=>value+1);}
   }
   const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote'].includes(item.action));
   async function enqueue(action,payload){
     if(!canQueue)return false;
     const operation={endpoint,action,payload};
-    try{await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
+    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
     catch(error){setError(error.message||'Browser storage is unavailable. The record was not queued.');return false;}
     if(!pending){setError('');setRejected(false);}
     return true;
   }
   // Dependent invoices wait until their newly created party is confirmed.
   useEffect(()=>{
-    if(pending && !pending.failure && ['createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
-  },[pending,endpoint,enabled]);
+    if(pending && !pending.failure && ['create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
+  },[pending,endpoint,enabled,uploadTick]);
   useEffect(()=>{
-    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(operation.action))send(operation);};
+    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(operation.action))send(operation);};
     window.addEventListener('online',online);return()=>window.removeEventListener('online',online);
+  });
+  useEffect(()=>{
+    const changed=event=>{if(event.detail?.endpoint!==endpoint)return;setReadError('');setError('');reload({fresh:true});const operation=queueRef.current[0];if(operation?.failure?.code==='UNAUTHORIZED')send(operation);};
+    window.addEventListener(ACCESS_CHANGED_EVENT,changed);return()=>window.removeEventListener(ACCESS_CHANGED_EVENT,changed);
   });
   async function save(action,payload){
     if(queueRef.current.length || working.current)return false;
     working.current=true;setBusy(true);
     const operation={endpoint,action,payload};
-    try{await updateQueue(items=>{if(items.length)throw new Error('Another request is already queued.');return [operation];});}catch{working.current=false;setBusy(false);setError('Browser storage is unavailable. The record was not sent.');return false;}
+    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.length)throw new Error('Another request is already queued.');return [operation];});}catch(error){working.current=false;setBusy(false);setError(error.message||'Browser storage is unavailable. The record was not sent.');return false;}
     working.current=false;
     return send(operation);
   }
@@ -221,11 +233,11 @@ export default function useAccounts(endpoint, enabled) {
       const snapshot=await reload({fresh:true});
       if(!snapshot)return;
       const {action,payload}=pending;
-      const existing=action==='deletePayment'?snapshot.transactions.find(row=>row.id===payload.id):action.includes('Note')?snapshot.notes?.find(row=>row.id===payload.id):action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
-      const mayHaveSaved=action==='deletePayment'?!existing:action==='deleteParty'?Boolean(existing?.archivedAt):['deleteInvoice','deleteInvoiceNote'].includes(action)?existing?.status==='deleted':['createParty','createInvoice','createInvoiceNote'].includes(action)?Boolean(existing):['updateParty','updateInvoice','updateInvoiceNote'].includes(action)?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
+      const existing=['create','deletePayment'].includes(action)?snapshot.transactions.find(row=>row.id===payload.id):action.includes('Note')?snapshot.notes?.find(row=>row.id===payload.id):action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
+      const mayHaveSaved=action==='deletePayment'?!existing:action==='deleteParty'?Boolean(existing?.archivedAt):['deleteInvoice','deleteInvoiceNote'].includes(action)?existing?.status==='deleted':['create','createParty','createInvoice','createInvoiceNote'].includes(action)?Boolean(existing):['updateParty','updateInvoice','updateInvoiceNote'].includes(action)?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
       if(mayHaveSaved){setError('This record exists in Google Sheets. Retry the saved request to confirm it before continuing.');return;}
       if(action==='createParty' && queueRef.current.some(item=>item.action==='createInvoice'&&item.payload.partyId===payload.id)){setError('An invoice is waiting for this party. Correct the rejected party before retrying.');return;}
-      await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(pending)));setRejected(false);setError('');return true;
+      await updateQueue(items=>items.filter(item=>pending.settlementId&&pending.action==='create'?item.settlementId!==pending.settlementId:operationKey(item)!==operationKey(pending)));setRejected(false);setError('');return true;
     } catch {setError('Could not safely clear the rejected request. Retry it before continuing.');}
     finally {working.current=false;setBusy(false);}
   }

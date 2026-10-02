@@ -1,6 +1,7 @@
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 // A multi-tab in-memory Sheet, including failure injection between item/header writes.
+export const TEST_ACCESS_TOKEN='test-ledger-access-token-0000000000000001';
 export function accountBackend() {
   const tabs=new Map(); let failTab='';const calls=[];
   function sheet(name){
@@ -13,8 +14,9 @@ export function accountBackend() {
     };}};tabs.set(name,value);return value;
   }
   const ss={getSheetByName:name=>tabs.get(name),insertSheet:sheet};
-  const context=vm.createContext({console,ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:()=> 'test-sheet'})},SpreadsheetApp:{openById:()=>ss,flush(){}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
+  const context=vm.createContext({console,ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:key=>key==='LEDGER_ACCESS_TOKEN'?TEST_ACCESS_TOKEN:'test-sheet'})},SpreadsheetApp:{openById:()=>ss,flush(){}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
   vm.runInContext(readFileSync(new URL('../../google-apps-script/Code.gs',import.meta.url),'utf8'),context);
-  const post=(action,transaction)=>context.doPost({postData:{contents:JSON.stringify({action,transaction})}});
-  return {post,tabs,context,calls,failNext:name=>{failTab=name;}};
+  const rawPost=body=>context.doPost({postData:{contents:JSON.stringify(body)}});
+  const post=(action,transaction)=>rawPost({action,transaction,accessToken:TEST_ACCESS_TOKEN});
+  return {post,rawPost,tabs,context,calls,failNext:name=>{failTab=name;}};
 }
