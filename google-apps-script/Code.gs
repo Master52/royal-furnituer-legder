@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.20.0';
+const BACKEND_VERSION = '1.21.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId'];
 
 function setup() {
@@ -276,7 +276,7 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
-  Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt'],
+  Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
   Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],
   InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
   InvoiceMeasurements:['id','invoiceId','itemId','description','lengthMilli','widthMilli','quantityMilli','pieces'],
@@ -284,7 +284,7 @@ const ACCOUNT_HEADERS = {
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={Parties:['partyType'],Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -479,23 +479,25 @@ function accountAction_(action,t) {
   if (action==='createParty' || action==='updateParty') {
     const name=accountText_(t.name,150,true),phone=accountText_(t.phone,50),address=accountText_(t.address,500);
     const existing=accountRows_(ss,'Parties').find(row=>row.id===t.id);
+    const partyType=t.partyType===undefined?(existing?.partyType||''):t.partyType;
+    if(!['','customer','supplier','lead','both'].includes(partyType))throw new Error('Invalid party type.');
     if (action==='updateParty') {
       if (!existing || existing.archivedAt) throw new Error('Party not found or deleted.');
       accountId_(t._editId);
-      const fields=['name','phone','address'];
+      const fields=['name','phone','address',...(t.partyType===undefined?[]:['partyType'])];
       if (existing.lastEditId===t._editId) {
         if (!accountSame_(existing,t,fields)) throw new Error('Edit ID already used.');
         return {ok:true,id:t.id,record:existing};
       }
       if (!Number.isSafeInteger(t._expectedRevision) || Number(existing.revision||0)!==t._expectedRevision) throw new Error('Party changed on another device. Refresh before editing.');
-      record={...existing,name,phone,address,updatedAt:new Date().toISOString(),revision:Number(existing.revision||0)+1,lastEditId:t._editId};
+      record={...existing,name,phone,address,partyType,updatedAt:new Date().toISOString(),revision:Number(existing.revision||0)+1,lastEditId:t._editId};
       accountWrite_(ss,'Parties',record,true);
     } else {
       if (t.schemaVersion!==1 || !validDate_(t.openingDate)) throw new Error('Invalid party opening date or schema.');
       accountAmount_(t.openingBalanceMinor,true);
-      const party={id:t.id,schemaVersion:1,name,phone,address,openingDate:t.openingDate,openingBalanceMinor:t.openingBalanceMinor};
+      const party={id:t.id,schemaVersion:1,name,phone,address,partyType,openingDate:t.openingDate,openingBalanceMinor:t.openingBalanceMinor};
       if (existing) {
-        if (!accountSame_(existing,party,Object.keys(party))) throw new Error('This ID already belongs to a different party.');
+        if (!accountSame_({...existing,partyType:existing.partyType||''},party,Object.keys(party))) throw new Error('This ID already belongs to a different party.');
         record=existing;
       } else {record={...party,createdAt:new Date().toISOString(),updatedAt:'',revision:0,lastEditId:'',archivedAt:''};accountWrite_(ss,'Parties',record);}
     }

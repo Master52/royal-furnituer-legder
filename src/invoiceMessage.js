@@ -3,21 +3,22 @@ import {invoiceNetValue} from './accounts.js';
 import {measurementText,quantityText,BILLING_UNITS} from './measurements.js';
 
 // Customer messages never include CP, margins or internal notes.
+const displayDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(value)?new Date(`${value}T12:00:00Z`).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric',timeZone:'Asia/Kolkata'}):text(value);
 const text=value=>String(value||'').replace(/[\r\n*_~`]+/g,' ').trim();
 export function invoiceMessage(invoice,preferences,{notes=[],transactions=[],partyBalance=null,checkedAt='',cached=false}={}){
-  const lines=[`*${text(preferences.shopName)}*`,`*${invoice.type==='sale'?'Sales':'Purchase'} Invoice: ${text(invoice.invoiceNumber)}*`,`Date: ${invoice.invoiceDate}`,`${invoice.type==='sale'?'Customer':'Supplier'}: ${text(invoice.partyName)}`];
+  const lines=[`*${text(preferences.shopName)}*`,'',`*${invoice.type==='sale'?'Sales':'Purchase'} Invoice: ${text(invoice.invoiceNumber)}*`,`Date: ${displayDate(invoice.invoiceDate)}`,`${invoice.type==='sale'?'Customer':'Supplier'}: ${text(invoice.partyName)}`];
   if(invoice.challanNumber)lines.push(`Challan: ${text(invoice.challanNumber)}`);
-  lines.push('','*Items*');
+  lines.push('','────────────','*ITEMS*');
   invoice.items.forEach((item,index)=>{
-    lines.push(`${index+1}. ${text(item.description)}`);
+    lines.push(`*${index+1}. ${text(item.description)}*`);
     if(item.itemNote)lines.push(`   ${text(item.itemNote)}`);
     if(item.measurements?.length)item.measurements.forEach(row=>lines.push(`   ${text(measurementText(item,row))}`));
-    lines.push(`   ${quantityText(item)} × ${money(item.rateMinor)}${item.billingUnit?` / ${BILLING_UNITS[item.billingUnit].toUpperCase()}`:''} = ${money(item.lineTotalMinor)}`);
-    if(Number(item.discountMinor)>0)lines.push(`   Existing item discount: ${money(item.discountMinor)} (included)`);
+    lines.push(`   Qty: ${quantityText(item)} · Rate: ${money(item.rateMinor)}${item.billingUnit?` / ${BILLING_UNITS[item.billingUnit].toUpperCase()}`:''}`,`   *Amount: ${money(item.lineTotalMinor)}*`);
+    if(Number(item.discountMinor)>0)lines.push(`   Item discount: ${money(item.discountMinor)} (included)`);
   });
   const itemDiscount=invoice.items.reduce((sum,item)=>sum+Number(item.discountMinor||0),0),discount=Number(invoice.invoiceDiscountMinor||0);
-  lines.push('',`Subtotal: ${money(Number(invoice.totalMinor)+discount+itemDiscount)}`);
-  if(itemDiscount)lines.push(`Existing item discounts: −${money(itemDiscount)}`);
+  lines.push('','────────────','*BILL SUMMARY*',`Subtotal: ${money(Number(invoice.totalMinor)+discount+itemDiscount)}`);
+  if(itemDiscount)lines.push(`Item discounts: −${money(itemDiscount)}`);
   if(discount)lines.push(`Discount${invoice.discountMode==='percent'?` · ${Number(invoice.discountValue)/100}%`:''}: −${money(discount)}`);
   lines.push(`*Invoice total: ${money(invoice.totalMinor)}*`);
   const adjusted=invoiceNetValue(invoice,notes);
@@ -33,11 +34,11 @@ export function invoiceMessage(invoice,preferences,{notes=[],transactions=[],par
   }else {
     const linked=transactions.filter(row=>row.id===invoice.paymentId&&row.invoiceId===invoice.id&&row.partyId===invoice.partyId&&!row.deletedAt);
     if(!cached&&linked.length===1&&!transactionIntegrityIssue(linked[0]))lines.push('',`Payment recorded with invoice: ${money(linked[0].amountMinor)} · ${linked[0].method}`);
-    lines.push('',Number.isSafeInteger(partyBalance)?`*Current party balance: ${money(Math.abs(partyBalance))}${partyBalance>0?' to receive':partyBalance<0?' to pay':' — settled'}*`:'Current party balance unavailable — refresh to confirm.');
-    if(Number.isSafeInteger(partyBalance))lines.push('Includes all invoices, payments and adjustments.');
+    lines.push('','*ACCOUNT SUMMARY*',Number.isSafeInteger(partyBalance)?`*Current party balance: ${money(Math.abs(partyBalance))}${partyBalance>0?' to receive':partyBalance<0?' to pay':' — settled'}*`:'Current party balance unavailable — refresh to confirm.');
+    if(Number.isSafeInteger(partyBalance))lines.push('This is your overall account balance, including other invoices and payments.');
   }
   const asOf=checkedAt?new Date(checkedAt).toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}):localNow().replace('T',' ');
-  lines.push(`Balance / payment snapshot: ${asOf}${cached?' · saved snapshot':''}`,'','Thank you for your business.');
+  lines.push(`As of: ${asOf}${cached?' · saved snapshot':''}`,'','────────────','Thank you for your business.','Please contact us if you have any questions about this bill.');
   return lines.join('\n');
 }
 

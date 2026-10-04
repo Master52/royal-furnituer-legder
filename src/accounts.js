@@ -10,11 +10,14 @@ export function validDate(value) {
 }
 export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '',itemNote:'',grouped:false,billingUnit:'',measurementUnit:'feet',measurementMode:'quantity',measurements:[] });
 export const blankInvoice = () => ({ partyId: '', walkIn:false, paymentWithInvoice:false, discountMode:'amount', discount:'0', checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
+export const PARTY_TYPES = {customer:'Customer',supplier:'Supplier',lead:'Lead',both:'Customer & Supplier'};
 export function makeParty(form, id = crypto.randomUUID()) {
+  const partyType=form.partyType||'';
+  if(partyType&&!Object.hasOwn(PARTY_TYPES,partyType))throw new Error('Choose a valid party type.');
   const name = form.name.trim();
   if (!name || name.length > 150) throw new Error('Enter a party name (up to 150 characters).');
   if (!validDate(form.openingDate)) throw new Error('Choose the opening balance date.');
-  return { id, schemaVersion: 1, name, phone: form.phone.trim(), address: form.address.trim(), openingDate: form.openingDate, openingBalanceMinor: minor(form.openingBalance || '0', 'opening balance') * (form.openingDirection === 'payable' ? -1 : 1) };
+  return { id, schemaVersion: 1, name, partyType, phone: form.phone.trim(), address: form.address.trim(), openingDate: form.openingDate, openingBalanceMinor: minor(form.openingBalance || '0', 'opening balance') * (form.openingDirection === 'payable' ? -1 : 1) };
 }
 export function makeInvoice(form, id = crypto.randomUUID()) {
   if ((!form.partyId&&!form.walkIn) || !['sale', 'purchase'].includes(form.type) || form.walkIn&&form.type!=='sale') throw new Error('Choose a party and invoice type.');

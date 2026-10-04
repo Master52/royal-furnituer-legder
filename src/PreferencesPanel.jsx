@@ -8,7 +8,7 @@ export default function PreferencesPanel({ preferences, savePreferences, range, 
   return <div className="preferences-panel">
     <p className="help">Preferences are saved for this connection in this browser. Other devices can have their own settings.</p>
     {feedback && <p className="notice" role="status">{feedback}</p>}
-    <form onSubmit={event=>{event.preventDefault();savePreferences(draft);}}>
+    <form data-shortcut-form onSubmit={event=>{event.preventDefault();savePreferences(draft);}}>
       <fieldset disabled={busy} className="entry-fields">
         <section className="setup-step"><h3>Shop details</h3>
           <label>Shop name<input required maxLength="100" value={draft.shopName} onChange={e=>change('shopName',e.target.value)}/></label>
@@ -25,7 +25,7 @@ export default function PreferencesPanel({ preferences, savePreferences, range, 
       </fieldset>
     </form>
     <section className="setup-step"><h3>Export CSV backup</h3><p className="help">Download all active transactions in this date range, freshly loaded from Sheets. Category, search and payment-method filters do not affect this export. Deleted records are excluded.</p>
-      <form onSubmit={e=>{e.preventDefault();exportCsv(dates);}}><div className="form-grid"><label>Export start date<input required type="date" value={dates[0]} onChange={e=>setDates([e.target.value,dates[1]])}/></label><label>Export end date<input required type="date" min={dates[0]} value={dates[1]} onChange={e=>setDates([dates[0],e.target.value])}/></label></div><button className="outline full" disabled={busy || !endpoint}>Download CSV</button></form>
+      <form data-shortcut-form onSubmit={e=>{e.preventDefault();exportCsv(dates);}}><div className="form-grid"><label>Export start date<input required type="date" value={dates[0]} onChange={e=>setDates([e.target.value,dates[1]])}/></label><label>Export end date<input required type="date" min={dates[0]} value={dates[1]} onChange={e=>setDates([dates[0],e.target.value])}/></label></div><button className="outline full" disabled={busy || !endpoint}>Download CSV</button></form>
     </section>
     <section className="setup-step"><h3>Deleted transactions</h3><p className="help">Restore a deleted payment with its original ID and details. It will return to its original transaction date in History.</p><button className="outline full" disabled={busy || !endpoint} onClick={loadDeleted}>{busy?'Please wait…':'Load / refresh deleted transactions'}</button>
       {deleted !== null && (deleted.length ? <ul className="deleted-list">{deleted.map(t=><li key={t.id}><div><strong>{t.party || t.category} · {money(t.amountMinor)}</strong><small>{t.transactionDate} · Payment {t.direction} · {t.method}</small><small>Deleted: {String(t.deletedAt).replace('T',' ').slice(0,19)} UTC</small>{t.notes && <p>{t.notes}</p>}</div><button className="outline" disabled={busy || !!pending} onClick={()=>restore(t)}>Restore</button></li>)}</ul> : <p className="help">No deleted transactions.</p>)}

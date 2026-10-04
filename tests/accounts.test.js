@@ -209,3 +209,24 @@ test('invoice History filters dates, category, number, party, item and notes whi
   assert.equal(filter('','sofa').length,2);assert.equal(filter('','returned')[0].id,purchase.id);
   assert.equal(filter('','missing').length,0);
 });
+
+test('party types are validated, editable, retry safe and preserve balances',()=>{
+ const b=accountBackend(),customer={...party,partyType:'customer'};
+ assert.equal(b.post('createParty',customer).ok,true);
+ assert.equal(b.post('createParty',customer).ok,true);
+ assert.equal(b.post('createParty',{...customer,partyType:'supplier'}).ok,false);
+ const update={id:partyId,name:party.name,phone:party.phone,address:party.address,partyType:'lead',_editId:'edit-party-type-00000001',_expectedRevision:0};
+ const saved=b.post('updateParty',update);assert.equal(saved.ok,true,saved.error);assert.equal(saved.record.partyType,'lead');assert.equal(saved.record.openingBalanceMinor,party.openingBalanceMinor);
+ assert.equal(b.post('updateParty',update).ok,true);
+ assert.equal(b.post('updateParty',{...update,partyType:'supplier'}).ok,false);
+ const legacy=b.post('updateParty',{...update,partyType:undefined,_editId:'edit-party-type-00000002',_expectedRevision:1});assert.equal(legacy.ok,true,legacy.error);assert.equal(legacy.record.partyType,'lead');
+ assert.equal(b.post('createParty',{...party,id:'party-invalid-type-000001',partyType:'unknown'}).ok,false);
+ assert.throws(()=>makeParty({...party,openingBalance:'0',partyType:'unknown'}),/valid party type/);
+});
+test('legacy party headers remain readable and get an additive type column only on write',()=>{
+ const b=accountBackend();const {partyType,...legacy}=party;b.post('createParty',legacy);
+ const tab=b.tabs.get('Parties'),column=tab.data[0].indexOf('partyType');tab.data.forEach(row=>row.splice(column,1));
+ assert.equal(b.post('listAccounts',{}).ok,true);assert.equal(tab.data[0].includes('partyType'),false);
+ assert.equal(b.post('createParty',legacy).ok,true);assert.equal(tab.data[0].includes('partyType'),true);
+ assert.equal(b.post('listAccounts',{}).parties[0].openingBalanceMinor,party.openingBalanceMinor);
+});

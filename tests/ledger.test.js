@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { periodRange, makeTransaction, totals, sumAmounts, filterTransactions, paymentMethodTotals, paymentMethodBalance, transactionIntegrityIssue, duplicateTransactionIds, money } from '../src/ledger.js';
 import { validateEndpoint, request } from '../src/api.js';
-import { newEntry, editEntry, hasDraft, shortcutAction } from '../src/entry.js';
+import { paymentPartySelection, newEntry, editEntry, hasDraft, shortcutAction } from '../src/entry.js';
 import { normalizePreferences, entryDefaults, preferenceKey, csvForTransactions } from '../src/preferences.js';
 const form = { amount:'1250.55',direction:'in',category:'Sale',method:'Cash',dateTime:'2026-09-12T14:20',party:'Customer',notes:'' };
 const TEST_ACCESS_TOKEN='test-ledger-access-token-0000000000000001';
@@ -243,10 +243,10 @@ test('client reads and writes without Firebase credentials',async()=>{
 });
 test('backend reports its deployed version without modifying existing transactions',()=>{
   const {context,post,data}=backend();
-  assert.equal(context.doGet().backendVersion,'1.20.0');
-  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.20.0');
+  assert.equal(context.doGet().backendVersion,'1.21.0');
+  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.21.0');
   assert.equal(data[1][data[0].indexOf('schemaVersion')],1);
-  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.20.0');
+  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.21.0');
 });
 test('Apps Script appends settlement columns and validates change, exchange and adjustment records',()=>{
   const {context,post,data}=backend();
@@ -356,4 +356,13 @@ test('stale edits cannot overwrite restored payments',()=>{
   call('restore',{id,deletedAt:deleted.deletedAt,_expectedRevision:deleted.revision});
   assert.equal(call('update',{...t,_expectedRevision:0,_editId:'55555555-1234-1234-1234-123456789012'}).code,'EDIT_CONFLICT');
   assert.equal(call('restore',{id:'99999999-1234-1234-1234-123456789012',deletedAt:deleted.deletedAt,_expectedRevision:1}).ok,false);
+});
+
+
+test('changing payment party clears settlement and links only an explicit saved selection',()=>{
+ const original={...newEntry(),party:'Old customer',partyId:'party-old',fullFinal:true,amount:'500',notes:'Keep this'};
+ const typed=paymentPartySelection(original,'New name');assert.equal(typed.partyId,'');assert.equal(typed.fullFinal,false);assert.equal(typed.amount,'500');assert.equal(typed.notes,'Keep this');assert.equal(original.partyId,'party-old');
+ const selected=paymentPartySelection(typed,'Saved customer','party-new');assert.equal(selected.partyId,'party-new');assert.equal(selected.party,'Saved customer');
+ assert.equal(paymentPartySelection(original,'Old customer','party-old').fullFinal,true);
+ assert.equal(paymentPartySelection(original,'').partyId,'');
 });

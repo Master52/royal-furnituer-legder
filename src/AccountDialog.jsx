@@ -18,7 +18,7 @@ export default function AccountDialog({ title, onClose, busy = false, className 
   return createPortal(
     <dialog ref={dialog} className={`account-dialog ${className}`} aria-labelledby={titleId}
       onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
-      <div className="account-dialog-heading"><h2 id={titleId}>{title}</h2><button type="button" className="outline" disabled={busy} onClick={onClose} aria-label="Close popup">Close</button></div>
+      <div className="account-dialog-heading"><h2 id={titleId}>{title}</h2><button type="button" className="outline" disabled={busy} onClick={onClose} aria-label="Close popup" title="Close popup (Escape)">Close</button></div>
       {children}
     </dialog>, document.body
   );

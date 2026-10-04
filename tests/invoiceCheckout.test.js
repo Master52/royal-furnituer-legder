@@ -81,7 +81,7 @@ test('deleted payment is not described as paid, and original invoice retry canno
 test('messages use overall party balance, hide private figures, sanitize markup and format recipient numbers',()=>{
  const invoice={...makeInvoice({...draft(),walkIn:false,partyId},id),partyName:'Ali*\nFake',invoiceNumber:'RF-S-000001',status:'issued'};
  const msg=invoiceMessage(invoice,{shopName:'Royal'},{partyBalance:250000,checkedAt:'2026-10-02T10:00:00Z'});
- assert.match(msg,/Current party balance: ₹2,500.00 to receive/);assert.match(msg,/Includes all invoices/);assert.doesNotMatch(msg,/Pending:|CP|profit|600|\nFake/);
+ assert.match(msg,/Current party balance: ₹2,500.00 to receive/);assert.match(msg,/overall account balance, including other invoices/);assert.doesNotMatch(msg,/Pending:|CP|profit|600|\nFake/);
  assert.equal(whatsappRecipient('9876543210'),'919876543210');assert.equal(whatsappRecipient('+44 7700 900123'),'447700900123');assert.equal(whatsappRecipient(''),'');assert.throws(()=>whatsappRecipient('abc123'));
 });
 test('checkout drafts preserve fields, but restored rejected invoices get fresh payment identities',()=>{

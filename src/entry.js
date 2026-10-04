@@ -39,3 +39,8 @@ export function focusAndCenter(element) {
 }
 
 export function partyPaymentEntry(party){return {...newEntry(),partyId:party.id,party:party.name,direction:'',category:'',method:'',explicitChoices:true,initialPartyId:party.id,initialPartyName:party.name};}
+
+// Typing clears the account link; only an explicit selection links a saved party.
+export function paymentPartySelection(form, name, partyId = '') {
+  return {...form,party:name,partyId,...(partyId!==form.partyId?{fullFinal:false}:{})};
+}

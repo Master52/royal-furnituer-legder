@@ -246,3 +246,23 @@
 @media(max-width:760px){.invoice-global-discount{grid-template-columns:1fr 1fr;max-width:none}.invoice-discount-total{grid-column:1/-1}.invoice-global-discount :is(input,select),.walk-in-payment :is(input,select){font-size:16px!important}.account-invoice-dialog .invoice-item-fields,.account-invoice-dialog .invoice-item-fields[data-type=purchase],.account-invoice-dialog .invoice-item-fields[data-grouped=true],.account-invoice-dialog .invoice-item-fields[data-grouped=true][data-type=purchase]{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .invoice-payment-toggle{display:flex!important;align-items:center;gap:7px;flex-wrap:wrap;font-size:12px;margin:12px 0!important}.invoice-payment-toggle input{width:15px!important;height:15px;min-height:15px;padding:0!important;margin:0!important;accent-color:#315d42}.invoice-payment-toggle small{font-size:10px;color:#617463}
+
+.party-balance-row strong>small{display:block;margin-top:4px;font-size:12px;font-weight:400;opacity:.75}
+
+.invoice-party-options .party-suggestion-contact{min-width:0;overflow-wrap:anywhere}
+.invoice-party-options .party-suggestion-contact :is(strong,small){display:block}
+.invoice-party-options .party-suggestion-balance{flex-shrink:0;text-align:right}
+.invoice-party-options .party-suggestion-balance :is(strong,small){display:block}
+.invoice-party-options .party-suggestion-balance[data-balance=positive] :is(strong,small){color:#21653b}
+.invoice-party-options .party-suggestion-balance[data-balance=negative] :is(strong,small){color:#a73434}
+[data-theme=dark] .invoice-party-options .party-suggestion-balance[data-balance=positive] :is(strong,small){color:#a9d6ab}
+[data-theme=dark] .invoice-party-options .party-suggestion-balance[data-balance=negative] :is(strong,small){color:#ffb3ad}
+.payment-party-link{margin-top:0}
+
+.shortcut-guide-dialog{width:min(700px,calc(100% - 24px))}
+.shortcut-guide-list{margin:12px 0 24px;display:grid;gap:8px}
+.shortcut-guide-list>div{display:grid;grid-template-columns:minmax(135px,.85fr) minmax(0,1.3fr);gap:12px;padding:8px 0;border-bottom:1px solid #dce5dc}
+.shortcut-guide-list dd{margin:0;overflow-wrap:anywhere}.shortcut-guide-list dt{font-size:12px}
+.shortcut-guide-button{white-space:nowrap}
+[data-theme=dark] .shortcut-guide-list>div{border-color:#3b5141}
+@media(max-width:500px){.shortcut-guide-list>div{grid-template-columns:minmax(110px,.8fr) minmax(0,1fr);gap:8px}.topbar{flex-wrap:wrap}}
