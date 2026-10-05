@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.22.0';
+const BACKEND_VERSION = '1.23.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -128,6 +128,10 @@ function doPost(e) {
     if (body.action === 'list' || body.action === 'listDeleted') {
       const db = ensureSheet_(spreadsheet_());
       return json_({ok:true,transactions:visiblePayments_(spreadsheet_(),records_(db.sheet,db.headers)).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
+    }
+    if(['listStock','importStock','createStockItem','recordStock','reviewInvoiceStock','reverseStock'].includes(body.action)){
+      {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
+      try{return json_(stockAction_(body.action,body.transaction));}catch(error){if(!accountRequest_.writes&&!error.code)error.code='STOCK_REJECTED';throw error;}
     }
     if (['getInvoices','listAccounts','createParty','updateParty','createInvoice','updateInvoice','cancelInvoice','createInvoiceNote','cancelInvoiceNote','deleteInvoice','deleteParty','deleteInvoiceNote','updateInvoiceNote'].includes(body.action)) {
       {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
@@ -278,6 +282,10 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
+  StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
+  StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
+  StockReviews:['id','operationId','invoiceId','invoiceRevision','invoiceItemId','status','reason'],
+  StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt'],
   ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId'],
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
   Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],
@@ -810,4 +818,108 @@ function accountStageMeasurements_(ss,items,verifyOnly=false){
   if(existing.some(row=>!byId.has(row.id)||!accountSame_(row,byId.get(row.id),ACCOUNT_HEADERS.InvoiceMeasurements)))throw new Error('This request ID was already used for different measurements. Retry the original request.');
   const missing=expected.filter(row=>!table.byId.has(row.id));if(verifyOnly&&missing.length)throw new Error('Saved invoice has missing measurements. Repair the Sheet before continuing.');
   if(!verifyOnly)accountAppendRows_(ss,'InvoiceMeasurements',missing);
+}
+
+// Stock quantities are decimal strings at 1e-8 precision, never floating-point balances.
+const STOCK_SCALE_=BigInt(100000000);
+const STOCK_UNITS_=['NOS','PCS','SHEET','BOX','PACKET','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
+function stockDecimal_(value,signed=false){
+  const text=String(value==null?'':value).trim();
+  if(!(signed?/^-?\d+(\.\d{1,8})?$/:/^\d+(\.\d{1,8})?$/).test(text))throw new Error('Invalid stock quantity; use at most 8 decimal places.');
+  const negative=text[0]==='-',parts=text.replace(/^-/,'').split('.');
+  const amount=BigInt(parts[0])*STOCK_SCALE_+BigInt((parts[1]||'').padEnd(8,'0'));
+  if(amount>BigInt('100000000000000000'))throw new Error('Stock quantity is too large.');return negative?-amount:amount;
+}
+function stockText_(value){const n=BigInt(value),a=n<0?-n:n,rest=a%STOCK_SCALE_;return (n<0?'-':'')+String(a/STOCK_SCALE_)+(rest?'.'+String(rest).padStart(8,'0').replace(/0+$/,''):'');}
+function stockConvert_(quantity,factor){const product=stockDecimal_(quantity,true)*stockDecimal_(factor);if(product%STOCK_SCALE_)throw new Error('Stock conversion exceeds 8 decimal places.');const value=stockText_(product/STOCK_SCALE_);stockDecimal_(value,true);return value;}
+function stockCanonical_(value){if(Array.isArray(value))return value.map(stockCanonical_);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stockCanonical_(value[key])]));return value;}
+function stockSnapshot_(ss){
+  const operations=accountReadRows_(ss,'StockOperations');
+  if(new Set(operations.map(row=>row.id)).size!==operations.length)throw new Error('Duplicate stock operations. Repair the Sheet.');
+  const committed=new Set(operations.map(op=>op.id)),reversed=new Set(operations.filter(op=>op.kind==='reversal').map(op=>op.reversesId));
+  const items=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
+  const movements=accountReadRows_(ss,'StockMovements').filter(row=>committed.has(row.operationId));
+  const reviews=accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId));
+  const balances=new Map();movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
+  return {items:items.map(item=>({...item,saleRateMinor:Number(item.saleRateMinor),purchaseRateMinor:Number(item.purchaseRateMinor),balance:stockText_(balances.get(item.id)||BigInt(0))})),movements,reviews,operations:operations.map(op=>{const {payloadHash,...publicOp}=op;return {...publicOp,reversed:reversed.has(op.id)};}),openingDate:operations.find(op=>op.kind==='opening')?.openingDate||''};
+}
+function stockItem_(input,operationId){
+  accountId_(input.id);const baseUnit=input.baseUnit,secondaryUnit=input.secondaryUnit||'';
+  if(!STOCK_UNITS_.includes(baseUnit)||secondaryUnit&&(!STOCK_UNITS_.includes(secondaryUnit)||secondaryUnit===baseUnit))throw new Error('Choose a base unit and a different optional secondary unit.');
+  const conversion=secondaryUnit?stockText_(stockDecimal_(input.conversion)):'1';if(stockDecimal_(conversion)<=0)throw new Error('Conversion must be positive.');
+  const lowStock=input.lowStock===''||input.lowStock==null?'':stockText_(stockDecimal_(input.lowStock));
+  const saleRateUnit=input.saleRateUnit||baseUnit,purchaseRateUnit=input.purchaseRateUnit||baseUnit;if([saleRateUnit,purchaseRateUnit].some(unit=>unit!==baseUnit&&unit!==secondaryUnit))throw new Error('Choose the units for sale and purchase prices.');
+  return {id:input.id,operationId,saleRateUnit,purchaseRateUnit,sourceId:accountText_(input.sourceId||'',100),name:accountText_(input.name,300,true).toUpperCase(),code:accountText_(input.code||'',100),category:accountText_(input.category||'',100),baseUnit,secondaryUnit,conversion,lowStock,saleRateMinor:accountAmount_(input.saleRateMinor||0),purchaseRateMinor:accountAmount_(input.purchaseRateMinor||0)};
+}
+function stockStage_(ss,name,rows){
+  const table=accountTable_(ss,name),missing=[];
+  rows.forEach(row=>{const previous=table.byId.get(row.id)?.record;if(previous){if(!accountSame_(previous,row,ACCOUNT_HEADERS[name].filter(key=>key!=='createdAt')))throw new Error('This stock request ID already contains different data. Retry the original request.');}else missing.push(row);});accountAppendRows_(ss,name,missing);
+}
+function stockAction_(action,t){
+  const ss=spreadsheet_();if(action==='listStock')return {ok:true,...stockSnapshot_(ss)};
+  if(!t||typeof t!=='object')throw new Error('Missing stock request.');accountId_(t.id);
+  const payloadHash=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(stockCanonical_(t))).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join(''),operations=accountRows_(ss,'StockOperations'),previous=operations.find(op=>op.id===t.id);
+  if(previous){if(previous.payloadHash!==payloadHash)throw new Error('This stock request ID was used with different values.');return {ok:true,id:t.id,stock:stockSnapshot_(ss)};}
+  const snapshot=stockSnapshot_(ss),now=new Date().toISOString(),itemsById=new Map(snapshot.items.map(item=>[item.id,item]));
+  const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now},items=[],movements=[],reviews=[];
+  function movement(item,entry,extra={}){
+    const quantity=stockText_(stockDecimal_(entry.quantity,true));if(stockDecimal_(quantity,true)===BigInt(0))throw new Error('Stock movement must be nonzero.');
+    if(!validDate_(entry.movementDate)||snapshot.openingDate&&entry.movementDate<snapshot.openingDate)throw new Error('Choose a stock movement date on or after opening stock.');
+    const unit=entry.unit||item.baseUnit;if(unit!==item.baseUnit&&unit!==item.secondaryUnit)throw new Error('Choose the stock item’s base or secondary unit.');
+    const conversion=unit===item.baseUnit?'1':item.conversion,baseQuantity=stockConvert_(quantity,conversion);
+    if(baseQuantity==='0')throw new Error('Stock movement rounds to zero.');
+    movements.push({id:t.id+'-m'+(movements.length+1),operationId:t.id,stockItemId:item.id,movementDate:entry.movementDate,quantity,unit,conversion,baseQuantity,invoiceId:'',invoiceItemId:'',reason:accountText_(entry.reason||'',500,true),createdAt:now,...extra});
+  }
+  if(action==='importStock'||action==='createStockItem'){
+    if(action==='importStock'&&snapshot.openingDate)throw new Error('Opening stock is already imported. Use stock adjustments instead of importing again.');
+    if(action==='importStock'&&(!validDate_(t.openingDate)||!Array.isArray(t.items)||!t.items.length||t.items.length>500))throw new Error('Choose an opening date and 1–500 items.');
+    const inputs=action==='importStock'?t.items:[t.item];operation.kind=action==='importStock'?'opening':'item';operation.openingDate=action==='importStock'?t.openingDate:'';
+    const sourceIds=new Set(snapshot.items.filter(item=>item.sourceId).map(item=>item.sourceId)),names=new Set(snapshot.items.map(item=>catalogueKey_(item.name)+'|'+catalogueKey_(item.code)));
+    inputs.forEach(input=>{
+      if(!input)throw new Error('Missing stock item.');const item=stockItem_(input,t.id),nameKey=catalogueKey_(item.name)+'|'+catalogueKey_(item.code);
+      if(catalogueKey_(item.name)==='GENERIC SALE')throw new Error('GENERIC SALE is excluded from physical stock.');
+      if(itemsById.has(item.id)||items.some(row=>row.id===item.id)||item.sourceId&&sourceIds.has(item.sourceId)||names.has(nameKey))throw new Error('Duplicate stock item or model.');
+      names.add(nameKey);if(item.sourceId)sourceIds.add(item.sourceId);items.push({...item,createdAt:now});itemsById.set(item.id,item);
+      if(action==='importStock'){
+        if(![item.baseUnit,item.secondaryUnit].includes(input.importUnit)||!input.importUnit||!input.saleRateUnit||!input.purchaseRateUnit)throw new Error('Confirm exported quantity and price units before importing.');
+        const opening=stockDecimal_(input.quantity);if(opening<0)throw new Error('Review negative opening stock before importing.');
+        if(opening>0)movement(item,{quantity:stockText_(opening),unit:input.importUnit,movementDate:t.openingDate,reason:'Opening stock import'});
+      }
+    });
+  }else if(action==='recordStock'){
+    if(!snapshot.openingDate)throw new Error('Import opening stock before recording movements.');operation.kind='manual';
+    const item=itemsById.get(t.stockItemId);if(!item)throw new Error('Select a stock item.');movement(item,t);
+  }else if(action==='reviewInvoiceStock'){
+    if(!snapshot.openingDate)throw new Error('Import opening stock before reviewing invoices.');
+    const invoice=accountRows_(ss,'Invoices').find(row=>row.id===t.invoiceId);
+    if(!invoice||invoice.status!=='issued'||Number(invoice.revision||0)!==t.invoiceRevision||invoice.invoiceDate<snapshot.openingDate)throw new Error('Invoice changed or predates opening stock. Refresh and review it.');
+    if(snapshot.operations.some(op=>op.kind==='review'&&op.invoiceId===invoice.id&&!op.reversed&&Number(op.invoiceRevision)!==t.invoiceRevision))throw new Error('Reverse the previous stock updates before reviewing this edited invoice.');
+    const invoiceItems=accountRows_(ss,'InvoiceItems').filter(item=>item.invoiceId===invoice.id&&(item.versionId||'')===(invoice.itemVersion||''));
+    const allowed=new Set(invoiceItems.map(item=>item.id)),handled=new Set(snapshot.reviews.filter(row=>row.invoiceId===invoice.id).map(row=>row.invoiceItemId));
+    if(!Array.isArray(t.entries)||!t.entries.length||t.entries.length>50)throw new Error('Choose invoice items to review.');
+    operation.kind='review';operation.invoiceId=invoice.id;operation.invoiceRevision=t.invoiceRevision;
+    t.entries.forEach((entry,index)=>{
+      if(!allowed.has(entry.invoiceItemId)||handled.has(entry.invoiceItemId)||!['updated','no-impact'].includes(entry.status))throw new Error('Invoice item was already handled or is invalid.');handled.add(entry.invoiceItemId);
+      const reason=accountText_(entry.reason||'',500,true);
+      if(entry.status==='updated'){
+        if(!Array.isArray(entry.movements)||!entry.movements.length||entry.movements.length>20)throw new Error('Choose 1–20 material movements for this item.');
+        entry.movements.forEach(input=>{const item=itemsById.get(input.stockItemId);if(!item)throw new Error('Select a stock material.');const quantity=stockDecimal_(input.quantity);if(quantity<=0)throw new Error('Enter a positive material quantity.');movement(item,{...input,quantity:stockText_(invoice.type==='sale'?-quantity:quantity),movementDate:t.movementDate,reason},{invoiceId:invoice.id,invoiceItemId:entry.invoiceItemId});});
+      }else if(entry.movements?.length)throw new Error('No-impact items cannot contain stock movements.');
+      reviews.push({id:t.id+'-r'+(index+1),operationId:t.id,invoiceId:invoice.id,invoiceRevision:t.invoiceRevision,invoiceItemId:entry.invoiceItemId,status:entry.status,reason});
+    });
+  }else if(action==='reverseStock'){
+    const original=snapshot.operations.find(op=>op.id===t.reversesId);
+    if(!original||original.reversed||!['manual','review'].includes(original.kind))throw new Error('Choose an active stock update to reverse.');
+    const reason=accountText_(t.reason,500,true);if(!validDate_(t.movementDate)||t.movementDate<snapshot.openingDate)throw new Error('Choose a reversal date on or after opening stock.');
+    operation.kind='reversal';operation.reversesId=original.id;
+    snapshot.movements.filter(row=>row.operationId===original.id).forEach(row=>movements.push({...row,id:t.id+'-m'+(movements.length+1),operationId:t.id,movementDate:t.movementDate,quantity:stockText_(-stockDecimal_(row.quantity,true)),baseQuantity:stockText_(-stockDecimal_(row.baseQuantity,true)),reason,createdAt:now}));
+  }else throw new Error('Unsupported stock action.');
+  if(movements.length>1000)throw new Error('Too many stock movements in one request.');
+  const balances=new Map(snapshot.items.map(item=>[item.id,stockDecimal_(item.balance,true)]));
+  movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
+  if(t.allowNegative!==true&&movements.some(row=>balances.get(row.stockItemId)<0))throw new Error('This update creates negative stock. Review quantities or explicitly allow negative stock.');
+  // Child rows are invisible until the operation commits. A failed/lost response retries the same IDs.
+  stockStage_(ss,'StockItems',items);stockStage_(ss,'StockMovements',movements);stockStage_(ss,'StockReviews',reviews);
+  SpreadsheetApp.flush();accountWrite_(ss,'StockOperations',operation);SpreadsheetApp.flush();
+  return {ok:true,id:t.id,stock:stockSnapshot_(ss)};
 }
