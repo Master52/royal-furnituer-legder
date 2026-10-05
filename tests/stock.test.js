@@ -40,3 +40,14 @@ test('confirmed bearings and lock packages convert exported fractions into whole
  const cases=[['13606a1b-437b-4d9b-b535-2dc9281bb408','0.44','PACKET','110'],['d832ba5d-1e6b-4d13-9ca1-d84df520f6ec','11.4','BOX','228'],['5ae29610-e9be-4ffe-b0f7-1192585052f0','1.45','BOX','29']];
  for(const [sourceId,quantity,unit,expected] of cases){const row=applyConfirmedStockUnits({sourceId,quantity,baseUnit:'',importUnit:'',secondaryUnit:'',conversion:'',saleRateUnit:'',purchaseRateUnit:''});assert.equal(row.baseUnit,'PCS');assert.equal(row.importUnit,unit);assert.equal(convertStock(row.quantity,row.conversion),expected);assert.equal(row.saleRateUnit,'');assert.equal(row.purchaseRateUnit,'');}
 });
+
+test('confirmed bori and PVC packages convert accurately and fractional pieces require review',async()=>{
+ const {applyConfirmedStockUnits}=await import('../src/stockImportProfile.js');const {validateStockBaseQuantity}=await import('../src/stock.js');
+ const cases=[['d1d287a0-b77d-4f94-9c0d-a736ed1b1ec2','4.09','BORI','818'],['ee32450c-8183-410f-a772-99a03316ba90','2.5','PACKET','75'],['ec2d7a2c-4910-41f3-b459-9a5b9e239cf4','5.36','PACKET','268']];
+ for(const [sourceId,quantity,unit,expected] of cases){const row=applyConfirmedStockUnits({sourceId,quantity});assert.equal(row.importUnit,unit);assert.equal(validateStockBaseQuantity(convertStock(quantity,row.conversion),row.baseUnit),expected);}
+ const domal=applyConfirmedStockUnits({sourceId:'dba29746-fdbe-4dca-91c7-89898ab7f8d5',quantity:'10.15384615'});assert.equal(convertStock(domal.quantity,domal.conversion),'253.84615375');assert.throws(()=>validateStockBaseQuantity(convertStock(domal.quantity,domal.conversion),domal.baseUnit),/fractional/);assert.equal(validateStockBaseQuantity('2.75','KG'),'2.75');
+});
+test('backend accepts bori, rejects fractional PCS before writing and permits exact corrected counts',()=>{
+ const b=accountBackend();opening(b,[item({secondaryUnit:'BORI',conversion:'200',quantity:'4.09',importUnit:'BORI',saleRateUnit:'PCS',purchaseRateUnit:'BORI'})]);assert.equal(read(b).items[0].balance,'818');
+ const bad=accountBackend(),payload={id:openingId,openingDate:'2026-10-01',items:[item({secondaryUnit:'PACKET',conversion:'25',quantity:'10.15384615',importUnit:'PACKET',saleRateUnit:'PCS',purchaseRateUnit:'PACKET'})]};assert.equal(bad.post('importStock',payload).ok,false);assert.equal(read(bad).items.length,0);assert.equal(read(bad).movements.length,0);assert.equal(bad.post('importStock',{...payload,items:[{...payload.items[0],quantity:'10'}]}).ok,true);assert.equal(read(bad).items[0].balance,'250');
+});

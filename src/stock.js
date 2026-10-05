@@ -1,5 +1,5 @@
 import {applyConfirmedStockUnits} from './stockImportProfile.js';
-export const STOCK_UNITS=['NOS','PCS','SHEET','BOX','PACKET','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
+export const STOCK_UNITS=['NOS','PCS','SHEET','BOX','PACKET','BORI','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
 export const STOCK_SCALE=100000000n;
 export function stockDecimal(value,{signed=false}={}){
   const text=String(value??'').trim();
@@ -15,6 +15,7 @@ export function convertStock(quantity,factor='1'){
   if(product%STOCK_SCALE)throw new Error('Conversion needs more than 8 decimal places. Check the units.');
   return stockText(product/STOCK_SCALE);
 }
+export function validateStockBaseQuantity(quantity,unit){const value=stockDecimal(quantity,{signed:true});if(['PCS','NOS'].includes(unit)&&value%STOCK_SCALE)throw new Error(`${quantity} ${unit} is fractional. Confirm the whole-piece count or conversion; it will not be rounded.`);return quantity;}
 export function stockBalance(item,movements){return stockText(movements.filter(m=>m.stockItemId===item.id).reduce((sum,m)=>sum+stockDecimal(m.baseQuantity,{signed:true}),0n));}
 export function parseStockCsv(text){
   const rows=[];let row=[],cell='',quoted=false;

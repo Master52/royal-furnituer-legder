@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.23.0';
+const BACKEND_VERSION = '1.23.1';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -822,7 +822,7 @@ function accountStageMeasurements_(ss,items,verifyOnly=false){
 
 // Stock quantities are decimal strings at 1e-8 precision, never floating-point balances.
 const STOCK_SCALE_=BigInt(100000000);
-const STOCK_UNITS_=['NOS','PCS','SHEET','BOX','PACKET','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
+const STOCK_UNITS_=['NOS','PCS','SHEET','BOX','PACKET','BORI','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
 function stockDecimal_(value,signed=false){
   const text=String(value==null?'':value).trim();
   if(!(signed?/^-?\d+(\.\d{1,8})?$/:/^\d+(\.\d{1,8})?$/).test(text))throw new Error('Invalid stock quantity; use at most 8 decimal places.');
@@ -867,6 +867,7 @@ function stockAction_(action,t){
     if(!validDate_(entry.movementDate)||snapshot.openingDate&&entry.movementDate<snapshot.openingDate)throw new Error('Choose a stock movement date on or after opening stock.');
     const unit=entry.unit||item.baseUnit;if(unit!==item.baseUnit&&unit!==item.secondaryUnit)throw new Error('Choose the stock item’s base or secondary unit.');
     const conversion=unit===item.baseUnit?'1':item.conversion,baseQuantity=stockConvert_(quantity,conversion);
+    if(['PCS','NOS'].includes(item.baseUnit)&&stockDecimal_(baseQuantity,true)%STOCK_SCALE_)throw new Error(item.name+' converts to fractional '+item.baseUnit+'. Confirm the whole-piece count or conversion; stock will not be rounded.');
     if(baseQuantity==='0')throw new Error('Stock movement rounds to zero.');
     movements.push({id:t.id+'-m'+(movements.length+1),operationId:t.id,stockItemId:item.id,movementDate:entry.movementDate,quantity,unit,conversion,baseQuantity,invoiceId:'',invoiceItemId:'',reason:accountText_(entry.reason||'',500,true),createdAt:now,...extra});
   }
