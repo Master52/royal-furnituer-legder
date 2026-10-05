@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.23.1';
+const BACKEND_VERSION = '1.23.2';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -129,7 +129,7 @@ function doPost(e) {
       const db = ensureSheet_(spreadsheet_());
       return json_({ok:true,transactions:visiblePayments_(spreadsheet_(),records_(db.sheet,db.headers)).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
     }
-    if(['listStock','importStock','createStockItem','recordStock','reviewInvoiceStock','reverseStock'].includes(body.action)){
+    if(['listStock','importStock','createStockItem','updateStockItem','recordStock','reviewInvoiceStock','reverseStock'].includes(body.action)){
       {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
       try{return json_(stockAction_(body.action,body.transaction));}catch(error){if(!accountRequest_.writes&&!error.code)error.code='STOCK_REJECTED';throw error;}
     }
@@ -282,6 +282,7 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
+  StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
   StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
   StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
   StockReviews:['id','operationId','invoiceId','invoiceRevision','invoiceItemId','status','reason'],
@@ -837,7 +838,10 @@ function stockSnapshot_(ss){
   const operations=accountReadRows_(ss,'StockOperations');
   if(new Set(operations.map(row=>row.id)).size!==operations.length)throw new Error('Duplicate stock operations. Repair the Sheet.');
   const committed=new Set(operations.map(op=>op.id)),reversed=new Set(operations.filter(op=>op.kind==='reversal').map(op=>op.reversesId));
-  const items=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
+  const originalItems=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
+  const byItem=new Map(originalItems.map(item=>[item.id,{...item,revision:0}]));
+  accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit)throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,revision:Number(version.revision),updatedAt:createdAt});});
+  const items=[...byItem.values()];
   const movements=accountReadRows_(ss,'StockMovements').filter(row=>committed.has(row.operationId));
   const reviews=accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId));
   const balances=new Map();movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
@@ -861,7 +865,7 @@ function stockAction_(action,t){
   const payloadHash=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(stockCanonical_(t))).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join(''),operations=accountRows_(ss,'StockOperations'),previous=operations.find(op=>op.id===t.id);
   if(previous){if(previous.payloadHash!==payloadHash)throw new Error('This stock request ID was used with different values.');return {ok:true,id:t.id,stock:stockSnapshot_(ss)};}
   const snapshot=stockSnapshot_(ss),now=new Date().toISOString(),itemsById=new Map(snapshot.items.map(item=>[item.id,item]));
-  const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now},items=[],movements=[],reviews=[];
+  const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now},items=[],versions=[],movements=[],reviews=[];
   function movement(item,entry,extra={}){
     const quantity=stockText_(stockDecimal_(entry.quantity,true));if(stockDecimal_(quantity,true)===BigInt(0))throw new Error('Stock movement must be nonzero.');
     if(!validDate_(entry.movementDate)||snapshot.openingDate&&entry.movementDate<snapshot.openingDate)throw new Error('Choose a stock movement date on or after opening stock.');
@@ -887,6 +891,14 @@ function stockAction_(action,t){
         if(opening>0)movement(item,{quantity:stockText_(opening),unit:input.importUnit,movementDate:t.openingDate,reason:'Opening stock import'});
       }
     });
+  }else if(action==='updateStockItem'){
+    const existing=itemsById.get(t.item?.id);
+    if(!existing||!Number.isSafeInteger(t._expectedRevision)||existing.revision!==t._expectedRevision)throw new Error('Stock item changed. Refresh and edit its latest settings.');
+    if(t.item.baseUnit!==existing.baseUnit)throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
+    const normalized=stockItem_({...t.item,sourceId:existing.sourceId},t.id);
+    if(snapshot.items.some(item=>item.id!==existing.id&&catalogueKey_(item.name)===catalogueKey_(normalized.name)&&catalogueKey_(item.code)===catalogueKey_(normalized.code)))throw new Error('Another stock item already uses this name/model.');
+    const {id,sourceId,operationId,...fields}=normalized;
+    versions.push({id:t.id+'-item',operationId:t.id,stockItemId:existing.id,revision:existing.revision+1,...fields,createdAt:now});operation.kind='item-edit';
   }else if(action==='recordStock'){
     if(!snapshot.openingDate)throw new Error('Import opening stock before recording movements.');operation.kind='manual';
     const item=itemsById.get(t.stockItemId);if(!item)throw new Error('Select a stock item.');movement(item,t);
@@ -920,7 +932,7 @@ function stockAction_(action,t){
   movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
   if(t.allowNegative!==true&&movements.some(row=>balances.get(row.stockItemId)<0))throw new Error('This update creates negative stock. Review quantities or explicitly allow negative stock.');
   // Child rows are invisible until the operation commits. A failed/lost response retries the same IDs.
-  stockStage_(ss,'StockItems',items);stockStage_(ss,'StockMovements',movements);stockStage_(ss,'StockReviews',reviews);
+  stockStage_(ss,'StockItems',items);stockStage_(ss,'StockItemVersions',versions);stockStage_(ss,'StockMovements',movements);stockStage_(ss,'StockReviews',reviews);
   SpreadsheetApp.flush();accountWrite_(ss,'StockOperations',operation);SpreadsheetApp.flush();
   return {ok:true,id:t.id,stock:stockSnapshot_(ss)};
 }

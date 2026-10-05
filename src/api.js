@@ -17,7 +17,7 @@ export function serializeRequest(endpoint, transaction, action = 'create', acces
 // Apps Script may spend 25 seconds waiting for its write lock before doing work.
 export const REQUEST_TIMEOUT_MS = 60000;
 const READ_ACTIONS = new Set(['list', 'listDeleted', 'listAccounts', 'getInvoices', 'listStock']);
-const CREATE_ACTIONS = new Set(['create', 'createParty', 'createInvoice', 'createInvoiceNote', 'importStock', 'createStockItem', 'recordStock', 'reviewInvoiceStock', 'reverseStock']);
+const CREATE_ACTIONS = new Set(['create', 'createParty', 'createInvoice', 'createInvoiceNote', 'importStock', 'createStockItem', 'updateStockItem', 'recordStock', 'reviewInvoiceStock', 'reverseStock']);
 const EDIT_ACTIONS = new Set(['update', 'updateParty', 'updateInvoice', 'updateInvoiceNote']);
 function safeToRetry(transaction, action) {
   return !transaction || READ_ACTIONS.has(action) || Boolean(transaction.id &&

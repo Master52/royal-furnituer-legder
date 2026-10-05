@@ -1,5 +1,5 @@
 // Confirmed by the shop owner. Source IDs identify variants, not names or prices.
-// Price units remain unconfirmed until reviewed separately.
+// The owner confirmed door/sheet groups and prices per exported quantity unit.
 export const confirmedMyBillBookUnits={
   '4d98ac88-29a7-4486-9814-79132b9cb557':{baseUnit:'KG',importUnit:'KG'},
   '3a31f69a-48f2-4710-968f-ed47719b824c':{baseUnit:'KG',importUnit:'KG'},
@@ -13,8 +13,17 @@ export const confirmedMyBillBookUnits={
   'ee32450c-8183-410f-a772-99a03316ba90':{baseUnit:'PCS',importUnit:'PACKET',secondaryUnit:'PACKET',conversion:'30'},
   'ec2d7a2c-4910-41f3-b459-9a5b9e239cf4':{baseUnit:'PCS',importUnit:'PACKET',secondaryUnit:'PACKET',conversion:'50'}
 };
+export function confirmedStockGroup(name){
+  const text=String(name||'').normalize('NFKC').trim().replace(/\s+/g,' ').toUpperCase();
+  if(/\bDOOR\b/.test(text)&&!/\b(?:HINGES?|HANDLE|LOCK|KIT|FRAME|CLOSER|STOPPER|LATCH|SCREW|ALDROP)\b/.test(text))return {baseUnit:'NOS',importUnit:'NOS'};
+  if(/\b(?:ACP|APP|HPL|MDF|PLYWOOD|PLYBOARD|BLOCK ?BOARD)\b/.test(text)&&!/\b(?:TAPE|GLUE|ADHESIVE|SCREW|HINGES?)\b/.test(text))return {baseUnit:'SHEET',importUnit:'SHEET'};
+  return null;
+}
 export function applyConfirmedStockUnits(row){
-  const profile=confirmedMyBillBookUnits[row.sourceId];
-  if(!profile||Object.entries(profile).some(([key,value])=>row[key]&&row[key]!==value))return row;
-  return {...row,...profile};
+  const profile=confirmedMyBillBookUnits[row.sourceId]||confirmedStockGroup(row.name);
+  const conflict=profile&&Object.entries(profile).some(([key,value])=>row[key]&&row[key]!==value);
+  const next=profile&&!conflict&&!row.unitsReviewed?{...row,...profile}:{...row};
+  // Preserve explicit choices. The owner confirmed that CSV rates use the exported stock unit.
+  if(next.importUnit){if(!next.saleRateUnit)next.saleRateUnit=next.importUnit;if(!next.purchaseRateUnit)next.purchaseRateUnit=next.importUnit;}
+  return next;
 }
