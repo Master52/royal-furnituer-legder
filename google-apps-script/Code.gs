@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.23.2';
+const BACKEND_VERSION = '1.23.3';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -286,7 +286,7 @@ const ACCOUNT_HEADERS = {
   StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
   StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
   StockReviews:['id','operationId','invoiceId','invoiceRevision','invoiceItemId','status','reason'],
-  StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt'],
+  StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt','importMode'],
   ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId'],
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
   Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],
@@ -823,7 +823,7 @@ function accountStageMeasurements_(ss,items,verifyOnly=false){
 
 // Stock quantities are decimal strings at 1e-8 precision, never floating-point balances.
 const STOCK_SCALE_=BigInt(100000000);
-const STOCK_UNITS_=['NOS','PCS','SHEET','BOX','PACKET','BORI','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
+const STOCK_UNITS_=['UNIT','NOS','PCS','SHEET','BOX','PACKET','BORI','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
 function stockDecimal_(value,signed=false){
   const text=String(value==null?'':value).trim();
   if(!(signed?/^-?\d+(\.\d{1,8})?$/:/^\d+(\.\d{1,8})?$/).test(text))throw new Error('Invalid stock quantity; use at most 8 decimal places.');
@@ -840,7 +840,7 @@ function stockSnapshot_(ss){
   const committed=new Set(operations.map(op=>op.id)),reversed=new Set(operations.filter(op=>op.kind==='reversal').map(op=>op.reversesId));
   const originalItems=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
   const byItem=new Map(originalItems.map(item=>[item.id,{...item,revision:0}]));
-  accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit)throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,revision:Number(version.revision),updatedAt:createdAt});});
+  accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit&&item.baseUnit!=='UNIT')throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,revision:Number(version.revision),updatedAt:createdAt});});
   const items=[...byItem.values()];
   const movements=accountReadRows_(ss,'StockMovements').filter(row=>committed.has(row.operationId));
   const reviews=accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId));
@@ -865,20 +865,21 @@ function stockAction_(action,t){
   const payloadHash=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(stockCanonical_(t))).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join(''),operations=accountRows_(ss,'StockOperations'),previous=operations.find(op=>op.id===t.id);
   if(previous){if(previous.payloadHash!==payloadHash)throw new Error('This stock request ID was used with different values.');return {ok:true,id:t.id,stock:stockSnapshot_(ss)};}
   const snapshot=stockSnapshot_(ss),now=new Date().toISOString(),itemsById=new Map(snapshot.items.map(item=>[item.id,item]));
-  const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now},items=[],versions=[],movements=[],reviews=[];
+  const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now,importMode:''},items=[],versions=[],movements=[],reviews=[];
   function movement(item,entry,extra={}){
     const quantity=stockText_(stockDecimal_(entry.quantity,true));if(stockDecimal_(quantity,true)===BigInt(0))throw new Error('Stock movement must be nonzero.');
     if(!validDate_(entry.movementDate)||snapshot.openingDate&&entry.movementDate<snapshot.openingDate)throw new Error('Choose a stock movement date on or after opening stock.');
     const unit=entry.unit||item.baseUnit;if(unit!==item.baseUnit&&unit!==item.secondaryUnit)throw new Error('Choose the stock item’s base or secondary unit.');
     const conversion=unit===item.baseUnit?'1':item.conversion,baseQuantity=stockConvert_(quantity,conversion);
-    if(['PCS','NOS'].includes(item.baseUnit)&&stockDecimal_(baseQuantity,true)%STOCK_SCALE_)throw new Error(item.name+' converts to fractional '+item.baseUnit+'. Confirm the whole-piece count or conversion; stock will not be rounded.');
+    if(['PCS','NOS'].includes(item.baseUnit)&&stockDecimal_(baseQuantity,true)%STOCK_SCALE_&&!(action==='importStock'&&t.importMode==='as-exported'))throw new Error(item.name+' converts to fractional '+item.baseUnit+'. Confirm the whole-piece count or conversion; stock will not be rounded.');
     if(baseQuantity==='0')throw new Error('Stock movement rounds to zero.');
     movements.push({id:t.id+'-m'+(movements.length+1),operationId:t.id,stockItemId:item.id,movementDate:entry.movementDate,quantity,unit,conversion,baseQuantity,invoiceId:'',invoiceItemId:'',reason:accountText_(entry.reason||'',500,true),createdAt:now,...extra});
   }
   if(action==='importStock'||action==='createStockItem'){
     if(action==='importStock'&&snapshot.openingDate)throw new Error('Opening stock is already imported. Use stock adjustments instead of importing again.');
     if(action==='importStock'&&(!validDate_(t.openingDate)||!Array.isArray(t.items)||!t.items.length||t.items.length>500))throw new Error('Choose an opening date and 1–500 items.');
-    const inputs=action==='importStock'?t.items:[t.item];operation.kind=action==='importStock'?'opening':'item';operation.openingDate=action==='importStock'?t.openingDate:'';
+    if(action==='importStock'&&t.importMode&&!['configured','as-exported'].includes(t.importMode))throw new Error('Invalid stock import mode.');
+    const inputs=action==='importStock'?t.items:[t.item];operation.kind=action==='importStock'?'opening':'item';operation.openingDate=action==='importStock'?t.openingDate:'';operation.importMode=action==='importStock'?(t.importMode||'configured'):'';
     const sourceIds=new Set(snapshot.items.filter(item=>item.sourceId).map(item=>item.sourceId)),names=new Set(snapshot.items.map(item=>catalogueKey_(item.name)+'|'+catalogueKey_(item.code)));
     inputs.forEach(input=>{
       if(!input)throw new Error('Missing stock item.');const item=stockItem_(input,t.id),nameKey=catalogueKey_(item.name)+'|'+catalogueKey_(item.code);
@@ -894,7 +895,8 @@ function stockAction_(action,t){
   }else if(action==='updateStockItem'){
     const existing=itemsById.get(t.item?.id);
     if(!existing||!Number.isSafeInteger(t._expectedRevision)||existing.revision!==t._expectedRevision)throw new Error('Stock item changed. Refresh and edit its latest settings.');
-    if(t.item.baseUnit!==existing.baseUnit)throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
+    if(t.item.baseUnit!==existing.baseUnit&&existing.baseUnit!=='UNIT')throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
+    if(existing.baseUnit==='UNIT'&&t.item.baseUnit!=='UNIT'&&['PCS','NOS'].includes(t.item.baseUnit)&&stockDecimal_(existing.balance,true)%STOCK_SCALE_)throw new Error('The exported quantity is fractional. Assign its actual source unit, such as BOX, PACKET or KG, rather than changing it to pieces.');
     const normalized=stockItem_({...t.item,sourceId:existing.sourceId},t.id);
     if(snapshot.items.some(item=>item.id!==existing.id&&catalogueKey_(item.name)===catalogueKey_(normalized.name)&&catalogueKey_(item.code)===catalogueKey_(normalized.code)))throw new Error('Another stock item already uses this name/model.');
     const {id,sourceId,operationId,...fields}=normalized;

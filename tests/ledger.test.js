@@ -243,10 +243,10 @@ test('client reads and writes without Firebase credentials',async()=>{
 });
 test('backend reports its deployed version without modifying existing transactions',()=>{
   const {context,post,data}=backend();
-  assert.equal(context.doGet().backendVersion,'1.23.2');
-  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.23.2');
+  assert.equal(context.doGet().backendVersion,'1.23.3');
+  assert.equal(post(makeTransaction(form,id)).backendVersion,'1.23.3');
   assert.equal(data[1][data[0].indexOf('schemaVersion')],1);
-  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.23.2');
+  assert.equal(context.doPost({postData:{contents:'{}'}}).backendVersion,'1.23.3');
 });
 test('Apps Script appends settlement columns and validates change, exchange and adjustment records',()=>{
   const {context,post,data}=backend();

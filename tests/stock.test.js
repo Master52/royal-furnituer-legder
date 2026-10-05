@@ -76,3 +76,18 @@ test('explicit removal of a secondary unit survives import auto-fill',async()=>{
  const {applyConfirmedStockUnits}=await import('../src/stockImportProfile.js');
  const row={sourceId:'b6b6ba7f-cf52-4b3d-b7aa-3bdb03312de6',name:'SCREW',unitsReviewed:true,baseUnit:'PCS',secondaryUnit:'',conversion:'',importUnit:'PCS',saleRateUnit:'PCS',purchaseRateUnit:'PCS'};assert.deepEqual(applyConfirmedStockUnits(row),row);
 });
+
+test('as-exported import uses original CSV values and requires no unknown-unit configuration',async()=>{
+ const {stockImportItems}=await import('../src/stock.js');
+ const rows=parseStockCsv('Item ID,Item Name*,Current stock,Sales Price,Purchase Price,Low stock alert quantity\nunknown-raw,HARDWARE,7.25,20.50,10.25,1\nb6b6ba7f-cf52-4b3d-b7aa-3bdb03312de6,SCREW 13 x 6 SELF,6.988,350,260,1\ngeneric-raw,GENERIC SALE,-612.03,0,0,\n');
+ rows[0].quantity='999';rows[0].salePrice='999';const items=stockImportItems(rows,true);assert.equal(items.length,2);assert.equal(items[0].quantity,'7.25');assert.equal(items[0].saleRateMinor,2050);assert.equal(items[0].baseUnit,'UNIT');assert.equal(items[0].saleRateUnit,'UNIT');assert.equal(items[1].quantity,'6.988');assert.equal(items[1].importUnit,'BOX');assert.equal(items[1].saleRateMinor,35000);
+ const b=accountBackend(),payload={id:openingId,openingDate:'2026-10-01',importMode:'as-exported',items};const result=b.post('importStock',payload);assert.equal(result.ok,true,result.error);assert.equal(result.stock.items[0].balance,'7.25');assert.equal(result.stock.items[1].balance,'6988');assert.equal(b.post('importStock',payload).ok,true);assert.equal(read(b).items.length,2);assert.equal(b.post('listAccounts',{}).transactions.length,0);
+});
+test('as-exported preserves inconsistent source fractions exactly while configured imports still reject fractional pieces',()=>{
+ const b=accountBackend(),payload={id:openingId,openingDate:'2026-10-01',importMode:'as-exported',items:[item({secondaryUnit:'PACKET',conversion:'25',quantity:'10.15384615',importUnit:'PACKET',saleRateUnit:'PACKET',purchaseRateUnit:'PACKET'})]};const result=b.post('importStock',payload);assert.equal(result.ok,true,result.error);assert.equal(result.stock.items[0].balance,'253.84615375');assert.equal(result.stock.movements[0].quantity,'10.15384615');assert.equal(result.stock.movements[0].unit,'PACKET');assert.equal(result.stock.operations[0].importMode,'as-exported');assert.equal(accountBackend().post('importStock',{...payload,importMode:'configured'}).ok,false);
+});
+test('CSV unit can be assigned later without changing balances or historical movements',()=>{
+ const b=accountBackend();opening(b,[item({baseUnit:'UNIT',secondaryUnit:'',conversion:'1',quantity:'7.25',importUnit:'UNIT',saleRateUnit:'UNIT',purchaseRateUnit:'UNIT'})]);const before=read(b).items[0],payload={id:'stock-settings-edit-000001',_expectedRevision:0,item:{...before,baseUnit:'KG',saleRateUnit:'KG',purchaseRateUnit:'KG',secondaryUnit:'GRAM',conversion:'0.001'}};
+ const result=b.post('updateStockItem',payload);assert.equal(result.ok,true,result.error);assert.equal(result.stock.items[0].balance,'7.25');assert.equal(result.stock.items[0].baseUnit,'KG');assert.equal(result.stock.movements[0].baseQuantity,'7.25');assert.equal(result.stock.movements[0].unit,'UNIT');assert.equal(b.post('updateStockItem',payload).ok,true);
+ assert.equal(b.post('updateStockItem',{...payload,id:'stock-settings-edit-000002',_expectedRevision:1,item:{...payload.item,baseUnit:'BOX',secondaryUnit:''}}).ok,false);
+});
