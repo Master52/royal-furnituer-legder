@@ -1,10 +1,12 @@
+import CataloguePicker from './CataloguePicker.jsx';
+import {applyCatalogueItem} from './catalogue.js';
 import React, {memo,useLayoutEffect,useRef} from 'react';
 import {BILLING_UNITS,blankMeasurement,billingPreview,billingPrice_,billingQuantityText} from './measurements.js';
 import {minor} from './accounts.js';
 import {money} from './ledger.js';
 import {focusAndCenter} from './entry.js';
 
-export default memo(function InvoiceItemEditor({item,index,type,onChange,onRemove,removeDisabled,measurementEnabled,itemDescriptionsEnabled}){
+export default memo(function InvoiceItemEditor({catalogue=[],item,index,type,onChange,onRemove,removeDisabled,measurementEnabled,itemDescriptionsEnabled}){
   const unit=item.billingUnit||'',sizes=item.measurements||[],dimensions=['sqft','rft'].includes(unit),grouped=Boolean(item.grouped||sizes.length>1||(!dimensions&&sizes.length>0));
   const prefix='Item '+(index+1);
   const nameInput=useRef(null),nameSelection=useRef(null);
@@ -46,7 +48,7 @@ export default memo(function InvoiceItemEditor({item,index,type,onChange,onRemov
   const quantityLabel=quantity?(unit?billingQuantityText(quantity,unit):String(quantity.quantityMilli/1000)+' QTY'):'Enter measurements';
   return <div className="invoice-item-editor" onKeyDown={keys}>
     <div className="invoice-item-fields" data-grouped={grouped||dimensions} data-type={type}>
-    <label>{prefix}<input ref={nameInput} data-invoice-field="description" aria-label={prefix+' description'} required maxLength="300" value={item.description} onChange={updateName} onCompositionEnd={updateName}/></label>
+    <CataloguePicker catalogue={catalogue} item={item} index={index} type={type} inputRef={nameInput} onChange={updateName} onCompositionEnd={updateName} onSelect={record=>{if(record.billingUnit!==(item.billingUnit||'nos')&&sizes.some(row=>row.length||row.width)&&!window.confirm('Use this catalogue unit and clear the current measurements?'))return;onChange(index,applyCatalogueItem(item,record,type));}}/>
     <label>Billing unit<select data-invoice-field="unit" aria-label={prefix+' billing unit'} disabled={!measurementEnabled} value={unit||'nos'} onChange={e=>selectUnit(e.target.value)}>{Object.entries(BILLING_UNITS).map(([value,label])=><option key={value} value={value}>{label.toUpperCase()}</option>)}</select></label>
     {!grouped&&!dimensions&&<label>{unit==='kg'?'Weight (kg)':'Quantity'}<input data-invoice-field="quantity" type="number" min="0.001" max="1000000" step="0.001" required value={item.quantity} onChange={e=>update('quantity',e.target.value)}/></label>}
     <label>Rate (₹)<input aria-label="Rate (₹)" data-invoice-field="rate" type="number" min="0" step="0.01" required value={item.rate} onChange={e=>update('rate',e.target.value)}/></label>

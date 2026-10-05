@@ -1,7 +1,7 @@
 import {blankCheckout} from './invoiceCheckout.js';
 import {MAX_MINOR,minor,invoiceDiscount} from './invoiceAmounts.js';
 import {scaledInput,draftMeasurements,billingQuantity_,billingPrice_,measurementDraftFromItem} from './measurements.js';
-import { localNow, transactionIntegrityIssue, duplicateTransactionIds, hasSettlement, SHOP_TIMEZONE } from './ledger.js';
+import { paymentMethodText, localNow, transactionIntegrityIssue, duplicateTransactionIds, hasSettlement, SHOP_TIMEZONE } from './ledger.js';
 
 export const ACCOUNTS_VERSION = '1.8.0';
 export {MAX_MINOR,minor} from './invoiceAmounts.js';
@@ -10,7 +10,7 @@ export function validDate(value) {
 }
 export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '',itemNote:'',grouped:false,billingUnit:'',measurementUnit:'feet',measurementMode:'quantity',measurements:[] });
 export const blankInvoice = () => ({ partyId: '', walkIn:false, paymentWithInvoice:false, discountMode:'amount', discount:'0', checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
-export const PARTY_TYPES = {customer:'Customer',supplier:'Supplier',lead:'Lead',both:'Customer & Supplier'};
+export const PARTY_TYPES = {customer:'Customer',supplier:'Supplier',lead:'Lead',karigar:'Karigar',both:'Customer & Supplier'};
 export function makeParty(form, id = crypto.randomUUID()) {
   const partyType=form.partyType||'';
   if(partyType&&!Object.hasOwn(PARTY_TYPES,partyType))throw new Error('Choose a valid party type.');
@@ -103,7 +103,7 @@ export function partyStatement(party, invoices, transactions, start = '0000-01-0
     if (t.partyId !== party.id || t.deletedAt || (t.recordType && t.recordType !== 'payment')) continue;
     if (duplicates.has(t.id) || transactionIntegrityIssue(t)) throw new Error('A linked payment is invalid or duplicated. Correct it before using this party balance.');
     if(hasSettlement(t)&&Number(t.settlementDiscountMinor)>0)events.push({id:`${t.id}-settlement`,date:t.transactionDate,sort:`${t.transactionTime.length===5?t.transactionTime+':00':t.transactionTime}-${t.createdAt||''}-${t.id}-settlement`,description:'Full & final settlement discount',notes:t.notes,delta:-Number(t.settlementDiscountMinor)});
-    events.push({ id: t.id, date: t.transactionDate, sort: `${t.transactionTime.length === 5 ? t.transactionTime + ':00' : t.transactionTime}-${t.createdAt || ''}-${t.id}`, description: `Payment ${t.direction === 'in' ? 'received' : 'made'} · ${t.method}`, notes: t.notes, delta: Number(t.amountMinor) * (t.direction === 'in' ? -1 : 1) });
+    events.push({ id: t.id, date: t.transactionDate, sort: `${t.transactionTime.length === 5 ? t.transactionTime + ':00' : t.transactionTime}-${t.createdAt || ''}-${t.id}`, description: `Payment ${t.direction === 'in' ? 'received' : 'made'} · ${paymentMethodText(t)}`, notes: t.notes, delta: Number(t.amountMinor) * (t.direction === 'in' ? -1 : 1) });
   }
   events.sort((a, b) => a.date.localeCompare(b.date) || a.sort.localeCompare(b.sort));
   let balance = 0, opening = 0;
@@ -155,7 +155,7 @@ export function accountBalances(parties,invoices,transactions,notes=[]){
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }
 export function invoiceDraftFromRecord(saved){
-  return {...blankInvoice(),partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
+  return {...blankInvoice(),partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{cashPortion:saved.payment.cashPortionMinor?String(Number(saved.payment.cashPortionMinor)/100):'',onlinePortion:'',amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
 }
 
 

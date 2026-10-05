@@ -266,3 +266,32 @@
 .shortcut-guide-button{white-space:nowrap}
 [data-theme=dark] .shortcut-guide-list>div{border-color:#3b5141}
 @media(max-width:500px){.shortcut-guide-list>div{grid-template-columns:minmax(110px,.8fr) minmax(0,1fr);gap:8px}.topbar{flex-wrap:wrap}}
+
+.catalogue-picker{position:relative;min-width:0}.catalogue-options strong{overflow-wrap:anywhere;min-width:0}.catalogue-options small{flex-shrink:0}
+.invoice-save-actions{display:flex;gap:8px;align-items:center;min-width:0}.invoice-save-actions>button{white-space:normal}
+.document-share-tools{border-top:1px solid #dce5dc;padding-top:16px;margin-top:16px}.document-image-preview{display:flex;align-items:flex-start;gap:16px;margin:16px 0}.document-image-preview>img{width:min(180px,40%);height:auto;border:1px solid #bccbbe;border-radius:6px}.document-image-preview>div{display:flex;flex-wrap:wrap;gap:8px}.document-image-preview a{display:inline-block;font-size:12px;text-decoration:none;padding:10px;border:1px solid #bccbbe;border-radius:6px}.ledger-message-preview{display:block;box-sizing:border-box;width:100%;font:inherit;padding:12px;margin:8px 0}
+[data-theme=dark] .document-share-tools{border-color:#3b5141}
+@media(max-width:760px){
+ .account-invoice-dialog[open]{width:100%;max-width:100%;height:100dvh;max-height:100dvh;margin:0;border:0;border-radius:0;padding:12px;padding-top:max(12px,env(safe-area-inset-top))}
+ .account-invoice-dialog>.account-dialog-heading{padding-bottom:10px;border-bottom:1px solid #dce5dc;margin-bottom:8px}
+ .account-invoice-dialog .account-dialog-heading h2{font-size:17px}.account-invoice-dialog .account-dialog-heading>button{min-width:64px;min-height:44px}
+ .account-invoice-dialog .invoice-edit-content{padding:0 2px 20px;scroll-padding:24px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+ .account-invoice-dialog .document-types>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.account-invoice-dialog .document-types button{min-height:44px;padding:10px;font-size:13px}
+ .account-invoice-dialog .invoice-customer-mode{display:flex;flex-wrap:wrap;gap:8px}.account-invoice-dialog .invoice-customer-mode>button{flex:1;min-height:44px;padding:10px;font-size:13px}
+ .account-invoice-dialog input,.account-invoice-dialog select,.account-invoice-dialog textarea,.account-invoice-dialog .invoice-header-fields input,.account-invoice-dialog .invoice-item-fields input,.account-invoice-dialog .measurement-row input{font-size:16px!important;min-height:44px!important;padding:10px!important}
+ .account-invoice-dialog input[type=checkbox]{min-height:22px!important;width:22px!important;height:22px!important;padding:0!important}
+ .account-invoice-dialog label,.account-invoice-dialog .invoice-item-fields>label{font-size:12px;line-height:1.4}
+ .account-invoice-dialog .invoice-item-editor{border:1px solid #bccbbe;border-radius:10px;padding:12px!important;margin:12px 0!important;background:#f7faf6}
+ .account-invoice-dialog .invoice-item-fields{gap:10px;align-items:end}.account-invoice-dialog .invoice-item-fields>button{min-height:44px;width:100%}
+ .account-invoice-dialog .item-grouping-control{margin-top:12px}.account-invoice-dialog .item-grouping-control label{min-height:44px;font-size:12px}
+ .account-invoice-dialog .item-measurements{display:flex;flex-direction:column;gap:12px;padding:10px}.account-invoice-dialog .measurement-total{border-top:1px solid #dce5dc;width:100%;padding-top:12px;align-items:flex-end}
+ .account-invoice-dialog .measurement-row{padding:12px 0;gap:10px}.account-invoice-dialog .measurement-row>button{min-height:44px}
+ .account-invoice-dialog .invoice-pos-items>button{width:100%;min-height:44px;font-size:14px;padding:12px}.account-invoice-dialog textarea{height:auto;min-height:72px!important}
+ .account-invoice-dialog .invoice-global-discount{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.invoice-discount-total{grid-column:1/-1}
+ .account-invoice-dialog .walk-in-payment .account-fields,.split-payment-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.split-payment-fields>.help{grid-column:1/-1}
+ .account-invoice-dialog .invoice-submit-bar{flex-wrap:wrap;gap:8px;padding:12px 0 max(12px,env(safe-area-inset-bottom));box-shadow:0 -5px 14px #173e300a}
+ .account-invoice-dialog .invoice-submit-total{display:flex;align-items:center;justify-content:space-between;width:100%}.account-invoice-dialog .invoice-submit-total>strong{font-size:22px;margin:0}
+ .invoice-save-actions{display:grid;grid-template-columns:1fr 1.35fr;width:100%;gap:8px}.invoice-save-actions>button{min-height:48px;padding:12px;font-size:14px}.invoice-save-actions>button:only-child{grid-column:1/-1}
+ .account-invoice-dialog kbd{display:none}.account-invoice-dialog .catalogue-options button,.invoice-party-options button{min-height:48px;padding:12px}
+ [data-theme=dark] .account-invoice-dialog .invoice-item-editor{background:#18271e;border-color:#3b5141}
+}

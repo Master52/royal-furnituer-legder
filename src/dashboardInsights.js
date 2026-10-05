@@ -85,7 +85,7 @@ export function dashboardInsights({invoices,notes,transactions,parties,partyBala
     figures,comparison,trend,
     margin:knownProfit(figures)&&figures.sales>0?figures.grossProfit/figures.sales*100:null,
     invoiceCount:periodInvoices.length,averageBill:periodInvoices.length?Math.round(billed/periodInvoices.length):null,
-    cashMovement:payments.filter(payment=>within(payment.transactionDate,range)&&['Cash','Online'].includes(payment.method)).reduce((sum,payment)=>sum+Number(payment.amountMinor)*(payment.direction==='in'?1:-1),0),
+    cashMovement:payments.filter(payment=>within(payment.transactionDate,range)&&['Cash','Online','Split'].includes(payment.method)).reduce((sum,payment)=>sum+Number(payment.amountMinor)*(payment.direction==='in'?1:-1),0),
     topCustomers:[...customers.values()].filter(row=>row.sales>0).sort((a,b)=>b.sales-a.sales||a.name.localeCompare(b.name)).slice(0,5),
     outstanding:partyBalances.filter(row=>Number.isSafeInteger(row.balance)&&row.balance>0).sort((a,b)=>b.balance-a.balance||a.party.name.localeCompare(b.party.name)).slice(0,5),
     unavailableBalances:partyBalances.filter(row=>!Number.isSafeInteger(row.balance)).length,

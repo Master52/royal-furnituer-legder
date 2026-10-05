@@ -29,7 +29,7 @@ export function entryDefaults(preferences) {
   return { category:preferences.defaultCategory, method:preferences.defaultMethod, direction:preferences.defaultCategory==='Sale'?'in':'out' };
 }
 export function csvForTransactions(rows) {
-  const columns = ['id','recordType','transactionDate','transactionTime','timezone','direction','category','method','amount','currency','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','createdAt','updatedAt','settlementDiscountMinor'];
+  const columns = ['id','recordType','transactionDate','transactionTime','timezone','direction','category','method','amount','currency','party','partyId','notes','chequeDate','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','createdAt','updatedAt','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
   const cell = value => {
     let text = String(value ?? '');
     // CSV quoting alone does not stop spreadsheet formula execution.

@@ -2,7 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
 import RecordMenu from './RecordMenu.jsx';
 import AccountDialog from './AccountDialog.jsx';
-import { money, SHOP_TIMEZONE, transactionIntegrityIssue } from './ledger.js';
+import { paymentMethodText, money, SHOP_TIMEZONE, transactionIntegrityIssue } from './ledger.js';
 
 function timestamp(value){
   if(!value)return '—';
@@ -17,7 +17,7 @@ function TransactionContent({transaction,queued,duplicate=false}){
   const fields=[['Party',transaction.party||'—'],['Category',transaction.category],['Date',transaction.transactionDate],['Time',`${transaction.transactionTime} · ${transaction.timezone||SHOP_TIMEZONE}`]];
   if(transfer)fields.push(['From',transaction.fromMethod],['To',transaction.toMethod]);
   else if(!adjustment){
-    fields.push(['Payment method',transaction.method]);
+    fields.push(['Payment method',paymentMethodText(transaction)]);
     if(transaction.method==='Cheque')fields.push(['Cheque given date',transaction.chequeDate||'—']);
     if(transaction.cashReceivedMinor!==''&&transaction.cashReceivedMinor!=null)fields.push(['Cash received',money(transaction.cashReceivedMinor)],['Cash change returned',money(transaction.cashChangeMinor||0)],['Online change returned',money(transaction.onlineChangeMinor||0)]);
   }

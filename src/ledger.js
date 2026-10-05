@@ -1,5 +1,5 @@
 export const categories = ['Sale', 'Purchase', 'Bhara', 'Expense'];
-export const methods = ['Cash', 'Online', 'Cheque'];
+export const methods = ['Cash', 'Online', 'Cheque', 'Split'];
 export const SHOP_TIMEZONE = 'Asia/Kolkata';
 function integerValue(value) {
   if (typeof value==='number') return Number.isSafeInteger(value)?value:NaN;
@@ -29,6 +29,7 @@ export function transactionIntegrityIssue(t) {
   if (!validLocalDateTime(`${t.transactionDate}T${t.transactionTime}`)) return 'invalid transaction date or time';
   if (t.recordType === 'transfer') return t.direction === 'transfer' && t.category === 'Transfer' && ['Cash','Online'].includes(t.fromMethod) && ['Cash','Online'].includes(t.toMethod) && t.fromMethod !== t.toMethod ? '' : 'invalid cash/online exchange';
   if ((t.recordType && t.recordType !== 'payment') || !['in','out'].includes(t.direction) || !categories.includes(t.category) || !methods.includes(t.method)) return 'invalid payment details';
+  if(t.method==='Split'){const cash=integerValue(t.cashPortionMinor),online=integerValue(t.onlinePortionMinor);if(![cash,online].every(Number.isSafeInteger)||cash<=0||online<=0||cash+online!==Number(t.amountMinor))return 'unbalanced split payment';}
   if (t.method==='Cheque' && !validDateOnly(t.chequeDate)) return 'invalid cheque date';
   if (t.category === 'Sale' && t.direction === 'in' && t.method === 'Cash' && t.cashReceivedMinor !== '' && t.cashReceivedMinor != null) {
     const received=integerValue(t.cashReceivedMinor),cashChange=integerValue(t.cashChangeMinor || 0),onlineChange=integerValue(t.onlineChangeMinor || 0),amount=integerValue(t.amountMinor);
@@ -64,7 +65,7 @@ export function periodRange(period, now = new Date(), timeZone = SHOP_TIMEZONE) 
   return [date(start.getUTCFullYear(), start.getUTCMonth()+1, 1), date(end.getUTCFullYear(), end.getUTCMonth()+1, end.getUTCDate())];
 }
 export function filterTransactions(rows, { start, end, category = '', method = '', query = '' }) {
-  return rows.filter(t => t.transactionDate >= start && t.transactionDate <= end && (!category || t.category === category) && (!method || t.method === method) && `${t.party} ${t.notes} ${t.category} ${t.recordType==='transfer'?'cash online exchange transfer':''}`.toLowerCase().includes(query.toLowerCase())).sort((a,b) => `${b.transactionDate}T${b.transactionTime}`.localeCompare(`${a.transactionDate}T${a.transactionTime}`));
+  return rows.filter(t => t.transactionDate >= start && t.transactionDate <= end && (!category || t.category === category) && (!method || t.method === method || t.method==='Split'&&['Cash','Online'].includes(method)) && `${t.party} ${t.notes} ${t.category} ${t.recordType==='transfer'?'cash online exchange transfer':''}`.toLowerCase().includes(query.toLowerCase())).sort((a,b) => `${b.transactionDate}T${b.transactionTime}`.localeCompare(`${a.transactionDate}T${a.transactionTime}`));
 }
 export function totals(rows) {
   const duplicates=duplicateTransactionIds(rows);
@@ -131,7 +132,9 @@ export function makeTransaction(form, id = crypto.randomUUID()) {
     onlineChangeMinor=form.onlineChange ? parseMinor(form.onlineChange,'online change returned',true) : form.cashChange ? changeDue-parseMinor(form.cashChange,'cash change returned',true) : 0;
     if (cashChangeMinor<0 || onlineChangeMinor<0 || cashChangeMinor+onlineChangeMinor!==changeDue) throw new Error('Cash and online change returned must add up to the change due.');
   }
-  return {...base,partyId:form.partyId || '',recordType:'payment',direction:form.direction,category:form.category,method:form.method,chequeDate:form.method==='Cheque'?form.chequeDate:'',cashReceivedMinor,cashChangeMinor,onlineChangeMinor,fromMethod:'',toMethod:''};
+  let split={};
+  if(form.method==='Split'){const cash=parseMinor(form.cashPortion,'cash portion'),online=form.onlinePortion?parseMinor(form.onlinePortion,'online portion'):amountMinor-cash;if(online<=0||cash+online!==amountMinor)throw new Error('Cash and Online portions must add up to the payment amount.');split={cashPortionMinor:cash,onlinePortionMinor:online};}
+  return {...base,...split,partyId:form.partyId || '',recordType:'payment',direction:form.direction,category:form.category,method:form.method,chequeDate:form.method==='Cheque'?form.chequeDate:'',cashReceivedMinor,cashChangeMinor,onlineChangeMinor,fromMethod:'',toMethod:''};
 }
 
 export function paymentMethodTotals(rows,{start,end,category='',query=''}={}) {
@@ -145,6 +148,7 @@ export function paymentMethodTotals(rows,{start,end,category='',query=''}={}) {
     if(t.recordType==='transfer'){
       if(t.direction!=='transfer' || !['Cash','Online'].includes(t.fromMethod) || !['Cash','Online'].includes(t.toMethod) || t.fromMethod===t.toMethod) continue;
       add(t.fromMethod,'out',amount); add(t.toMethod,'in',amount);
+    }else if(t.method==='Split'){add('Cash',t.direction,Number(t.cashPortionMinor));add('Online',t.direction,Number(t.onlinePortionMinor));
     }else if(t.category==='Sale' && t.direction==='in' && t.method==='Cash' && t.cashReceivedMinor!=='' && t.cashReceivedMinor!=null){
       const received=integerValue(t.cashReceivedMinor),cashChange=integerValue(t.cashChangeMinor || 0),onlineChange=integerValue(t.onlineChangeMinor || 0);
       if (![received,cashChange,onlineChange].every(Number.isSafeInteger) || [received,cashChange,onlineChange].some(value=>value<0 || value>100000000000) || received<amount || received!==amount+cashChange+onlineChange) continue;
@@ -165,3 +169,5 @@ export function paymentMethodBalance(rows) {
   for(const t of rows){if(duplicates.has(t.id)||transactionIntegrityIssue(t)||t.recordType!=='adjustment')continue;cashAdjustment+=Number(t.cashAdjustmentMinor);onlineAdjustment+=Number(t.onlineAdjustmentMinor);}
   return {Cash:methods.Cash.in-methods.Cash.out+cashAdjustment,Online:methods.Online.in-methods.Online.out+onlineAdjustment};
 }
+
+export function paymentMethodText(payment){return payment.method==='Split'?`Cash + Online (${money(payment.cashPortionMinor)} cash + ${money(payment.onlinePortionMinor)} online)`:payment.method;}

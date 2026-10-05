@@ -3,13 +3,15 @@ import { request, serializeRequest, ACCESS_CHANGED_EVENT } from './api.js';
 import { accountBalances } from './accounts.js';
 import { loadAccountCache, saveAccountCache } from './storage.js';
 const EMPTY_NOTES=[];
-const EMPTY_ACCOUNTS = {parties:[],invoices:[],transactions:[],notes:[]};
+const EMPTY_ACCOUNTS = {catalogue:[],parties:[],invoices:[],transactions:[],notes:[]};
 import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock, uploadLock } from './accountQueue.js';
 export default function useAccounts(endpoint, enabled) {
   const [snapshot,setSnapshot] = useState(null);
   const [busy,setBusy] = useState(false);
   const [refreshing,setRefreshing] = useState(false);
   const [mutationError,setError] = useState('');
+  const [catalogueWarning,setCatalogueWarning]=useState('');
+  useEffect(()=>setCatalogueWarning(''),[endpoint]);
   const [readError,setReadError] = useState('');
   const [queue,setQueue] = useState(()=>readAccountQueue(localStorage));
   const pending=queue[0]||null;
@@ -177,6 +179,8 @@ export default function useAccounts(endpoint, enabled) {
           if(result.transaction?.id!==operation.payload.paymentId)throw new Error('Invoice uploaded; retry to confirm its linked payment.');
           if(!applyRecord('create',result.transaction)){const refreshed=await reload({fresh:true});if(!refreshed?.transactions.some(row=>row.id===operation.payload.paymentId))throw new Error('Retry to confirm the linked invoice payment.');}
         }
+        if(Array.isArray(result.catalogue)){const current=snapshotRef.current;const next={...current,data:{...current.data,catalogue:result.catalogue}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});}
+        setCatalogueWarning(result.catalogueWarning||'');
         if(operation.action==='deleteInvoice')setLastInvoice(previous=>previous?.id===record.id?null:previous);
         if(operation.action==='createInvoice')setLastInvoice({id:record.id,number:record.invoiceNumber});
         await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(operation)));
@@ -273,5 +277,5 @@ export default function useAccounts(endpoint, enabled) {
   const pendingNotes=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoiceNote'&&!noteIds.has(item.payload.id)&&invoiceById.has(item.payload.invoiceId)&&invoiceById.get(item.payload.invoiceId).status!=='deleted').map(item=>{const invoice=invoiceById.get(item.payload.invoiceId);return {...item.payload,invoiceNumber:invoice?.invoiceNumber,partyId:invoice?.partyId,partyName:invoice?.partyName,partyPhone:invoice?.partyPhone,partyAddress:invoice?.partyAddress,invoiceType:invoice?.type,status:'pending',_pending:true,noteNumber:'Awaiting note number'};}),[queuedHere,noteIds,invoiceById]);
   const partyBalances=useMemo(()=>accountBalances(parties,invoices,data.transactions,notes),[parties,invoices,data.transactions,notes]);
   const notedInvoiceIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.invoiceId)),[data.notes]);
-  return {...data,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
+  return {...data,catalogueWarning,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
 }

@@ -1,3 +1,4 @@
+import DocumentShare from './DocumentShare.jsx';
 import React,{useMemo,useState} from 'react';
 import {invoiceMessage,whatsappRecipient} from './invoiceMessage.js';
 
@@ -13,6 +14,7 @@ export default function InvoiceShare({invoice,preferences,accounts,paymentPendin
     <label>Message preview<textarea data-hotkey="alt+v" aria-keyshortcuts="Alt+V" aria-label="Message preview" readOnly rows="16" value={message}/></label>
     {disabled&&<p className="help">Finish pending uploads and refresh to confirm the invoice and balance before sharing.</p>}
     <div className="accounts-controls"><button data-hotkey="alt+r" aria-keyshortcuts="Alt+R" data-hotkey-label="Refresh invoice balance" type="button" className="outline" disabled={accounts.refreshing||Boolean(accounts.pending)||paymentPending} onClick={()=>accounts.reload({fresh:true})}>Refresh balance</button><button data-hotkey="alt+c" aria-keyshortcuts="Alt+C" data-hotkey-label="Copy invoice message" type="button" className="outline" disabled={disabled} onClick={copy}>Copy message</button><button data-hotkey="alt+w" aria-keyshortcuts="Alt+W" data-hotkey-label="Open WhatsApp draft" type="button" className="primary" disabled={disabled} onClick={whatsapp}>Open WhatsApp</button></div>
+    <DocumentShare title={`Invoice ${invoice.invoiceNumber}`} message={message} disabled={disabled}/>
     {feedback&&<p className="notice" role="status">{feedback}</p>}
   </section>;
 }

@@ -87,7 +87,7 @@ test('messages use overall party balance, hide private figures, sanitize markup 
 test('checkout drafts preserve fields, but restored rejected invoices get fresh payment identities',()=>{
  const source={...draft(),checkout:{method:'Cash',cashReceived:'1000',cashChange:'',onlineChange:'50'}},map=new Map([[invoiceDraftKey('test'),JSON.stringify(source)]]);
  const storage={getItem:key=>map.get(key)||null,setItem:(key,value)=>map.set(key,value)};
- assert.deepEqual(readInvoiceDraft(storage,'test').draft.checkout,{amount:'',...source.checkout});
+ assert.deepEqual(readInvoiceDraft(storage,'test').draft.checkout,{amount:'',cashPortion:'',onlinePortion:'',...source.checkout});
  const old=payload(),restored=invoiceDraftFromRecord(old),fresh=makeInvoice(restored,'invoice-checkout-000000002');assert.equal(fresh.paymentId,'invoice-checkout-000000002-payment');
 });
 test('dashboard counts walk-in sales without inventing customers or duplicating profit',()=>{

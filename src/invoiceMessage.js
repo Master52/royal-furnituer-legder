@@ -1,4 +1,4 @@
-import {money,localNow,transactionIntegrityIssue,duplicateTransactionIds} from './ledger.js';
+import {paymentMethodText,money,localNow,transactionIntegrityIssue,duplicateTransactionIds} from './ledger.js';
 import {invoiceNetValue} from './accounts.js';
 import {measurementText,quantityText,BILLING_UNITS} from './measurements.js';
 
@@ -27,13 +27,13 @@ export function invoiceMessage(invoice,preferences,{notes=[],transactions=[],par
   if(invoice.walkIn){
     const duplicates=duplicateTransactionIds(transactions),payment=transactions.find(row=>row.id===invoice.paymentId&&!row.deletedAt&&row.invoiceId===invoice.id);
     if(!cached&&invoice.status==='issued'&&payment&&!duplicates.has(payment.id)&&!transactionIntegrityIssue(payment)){
-      lines.push('',`Paid: ${money(payment.amountMinor)} · ${payment.method}`);
+      lines.push('',`Paid: ${money(payment.amountMinor)} · ${paymentMethodText(payment)}`);
       const pending=adjusted-Number(payment.amountMinor);
       lines.push(pending===0?'*Pending: ₹0 — Paid in full*':pending>0?`*Pending: ${money(pending)}*`:`*Refund / credit due: ${money(-pending)}*`);
     }else lines.push('','Payment status unavailable — refresh to confirm.');
   }else {
     const linked=transactions.filter(row=>row.id===invoice.paymentId&&row.invoiceId===invoice.id&&row.partyId===invoice.partyId&&!row.deletedAt);
-    if(!cached&&linked.length===1&&!transactionIntegrityIssue(linked[0]))lines.push('',`Payment recorded with invoice: ${money(linked[0].amountMinor)} · ${linked[0].method}`);
+    if(!cached&&linked.length===1&&!transactionIntegrityIssue(linked[0]))lines.push('',`Payment recorded with invoice: ${money(linked[0].amountMinor)} · ${paymentMethodText(linked[0])}`);
     lines.push('','*ACCOUNT SUMMARY*',Number.isSafeInteger(partyBalance)?`*Current party balance: ${money(Math.abs(partyBalance))}${partyBalance>0?' to receive':partyBalance<0?' to pay':' — settled'}*`:'Current party balance unavailable — refresh to confirm.');
     if(Number.isSafeInteger(partyBalance))lines.push('This is your overall account balance, including other invoices and payments.');
   }

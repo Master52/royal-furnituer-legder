@@ -4,7 +4,7 @@ import {keyboardChord,shortcutLabel,shortcutScope,shortcutAvailable,activateShor
 
 const navigation=[['alt+shift+1','Dashboard'],['alt+shift+2','Parties'],['alt+shift+3','History'],['alt+shift+4','Settings'],['mod+k','Search this page'],['alt+/','Shortcut guide']];
 const entryGuides={
- payment:[['alt+enter','Amount'],['alt+i','Payment in'],['alt+o','Payment out'],['alt+1','Sale'],['alt+2','Purchase'],['alt+3','Bhara'],['alt+4','Expense'],['alt+c','Cash'],['alt+l','Online'],['alt+q','Party / Payee'],['alt+v','Notes'],['alt+r','Cash received'],['alt+h','Cash change'],['alt+j','Online change']],
+ payment:[['alt+enter','Amount'],['alt+i','Payment in'],['alt+o','Payment out'],['alt+1','Sale'],['alt+2','Purchase'],['alt+3','Bhara'],['alt+4','Expense'],['alt+c','Cash'],['alt+l','Online'],['alt+k','Cash + Online'],['alt+q','Party / Payee'],['alt+v','Notes'],['alt+r','Cash received'],['alt+h','Cash change'],['alt+j','Online change']],
  invoice:[['alt+1','Sales invoice'],['alt+2','Purchase invoice'],['alt+3','Credit note'],['alt+4','Debit note'],['alt+q','Party'],['alt+d','Date'],['alt+h','Challan'],['alt+a','Add item'],['alt+j','Item name'],['alt+u','Quantity'],['alt+b','Billing unit'],['alt+l','Length'],['alt+w','Width'],['alt+f','Pieces'],['alt+z','Add grouped size'],['alt+r','Rate'],['alt+c','Cost price'],['alt+x','Discount'],['alt+v','Invoice notes'],['alt+g','Show / hide profit']],
  note:[['alt+3','Credit note'],['alt+4','Debit note'],['alt+q','Party'],['alt+i','Original invoice'],['alt+m','Amount'],['alt+r','Reason'],['alt+d','Date'],['alt+e','Cost treatment'],['alt+c','Cost correction']]
 };

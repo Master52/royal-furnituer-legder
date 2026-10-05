@@ -1,7 +1,7 @@
 import MeasurementBreakdown from './MeasurementBreakdown.jsx';
 import {quantityText,BILLING_UNITS} from './measurements.js';
 import React, {useState} from 'react';
-import { money,transactionIntegrityIssue,duplicateTransactionIds } from './ledger.js';
+import { paymentMethodText, money,transactionIntegrityIssue,duplicateTransactionIds } from './ledger.js';
 import {invoiceProfitFigures} from './invoiceProfit.js';
 
 // Print callers omit profitControls so internal figures never enter the printed document.
@@ -26,7 +26,7 @@ export default function InvoiceDocument({ invoice, preferences, profitControls=f
       <div className="invoice-final-profit"><dt>Profit after discounts & corrections</dt><dd>{profit.finalProfit===null?'Pending · costs incomplete':money(profit.finalProfit)}</dd></div>
       </dl><small>Confirmed invoice notes across all dates. Party settlement discounts appear in the party ledger and monthly profit; they are not allocated to this invoice.</small></div>}</div>}
     {preferences.printNotes && invoice.notes && <section className="invoice-document-notes"><h3>Notes</h3><p>{invoice.notes}</p></section>}
-    {!invoice.walkIn&&invoice.paymentId&&<p className="help">{payment?`Payment recorded with invoice: ${money(payment.amountMinor)} · ${payment.method}. Included in the party’s overall balance.`:'Payment recorded with invoice is unavailable — refresh to confirm.'}</p>}
+    {!invoice.walkIn&&invoice.paymentId&&<p className="help">{payment?`Payment recorded with invoice: ${money(payment.amountMinor)} · ${paymentMethodText(payment)}. Included in the party’s overall balance.`:'Payment recorded with invoice is unavailable — refresh to confirm.'}</p>}
     {invoice.walkIn&&<div className="invoice-walk-in-status">{payment?<><span>Paid: {money(payment.amountMinor)} · {payment.method}</span><strong>{pending===0?'Paid in full · Pending ₹0':pending>0?`Pending: ${money(pending)}`:`Refund / credit due: ${money(-pending)}`}</strong></>:<span>Payment status unavailable — refresh to confirm.</span>}</div>}
     <p className="help">Amounts in INR · {invoice.walkIn?'Walk-in sale; payment recorded separately without a customer account.':'Payments are tracked separately in the party ledger.'}</p>
   </section>;

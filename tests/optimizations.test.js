@@ -8,7 +8,7 @@ function fixture(){const backend=accountBackend();backend.post('createParty',par
 test('50 item invoices batch writes, reuse row reads and preserve challan on edit and retries',()=>{
  const {backend,draft}=fixture();backend.calls.length=0;const payload=makeInvoice(draft,'batch-invoice-0000000001');const result=backend.post('createInvoice',payload);assert.equal(result.ok,true);assert.equal(result.record.challanNumber,'DC / 123');
  const writes=backend.calls.filter(call=>call.name==='InvoiceItems'&&call.operation==='write'&&call.r>1);assert.equal(writes.length,1);assert.equal(writes[0].n,50);
- assert.ok(result.performance.reads<=3);assert.equal(result.performance.writes,2);assert.ok(result.performance.elapsedMs>=0);
+ assert.ok(result.performance.reads<=4);assert.equal(result.performance.writes,3);assert.ok(result.performance.elapsedMs>=0);assert.equal(backend.calls.filter(call=>call.name==='ItemCatalogue'&&call.operation==='write'&&call.r>1).length,1);
  assert.deepEqual(backend.post('createInvoice',payload).record,result.record);
  const editDraft=invoiceDraftFromRecord(result.record);editDraft.challanNumber='DC / 124';editDraft.items[0].rate='120';backend.calls.length=0;
  const edit={...makeInvoice(editDraft,payload.id),invoiceNumber:result.record.invoiceNumber,_expectedRevision:0,_editId:'batch-edit-0000000000001'};const changed=backend.post('updateInvoice',edit);assert.equal(changed.ok,true);assert.equal(changed.record.challanNumber,'DC / 124');assert.equal(backend.calls.filter(call=>call.name==='InvoiceItems'&&call.operation==='write'&&call.r>1).length,1);
