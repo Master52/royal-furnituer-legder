@@ -1,3 +1,4 @@
+import {applyConfirmedStockUnits} from './stockImportProfile.js';
 import React,{useEffect,useState} from 'react';
 import {STOCK_UNITS,parseStockCsv,convertStock,stockDecimal,stockText} from './stock.js';
 import {localNow} from './ledger.js';
@@ -6,7 +7,7 @@ export function stockPrice(value){const text=String(value||'0').trim();if(!/^\d+
 export function UnitSelect({label,value,onChange,optional=false,units=STOCK_UNITS}){return <label>{label}<select aria-label={label} value={value} onChange={e=>onChange(e.target.value)}><option value="">{optional?'None':'Choose unit'}</option>{units.map(unit=><option key={unit}>{unit}</option>)}</select></label>;}
 export default function StockImport({endpoint,stock,onClose}){
  const key=`rf.stock-import:${endpoint}`;
- const [draft,setDraft]=useState(()=>{try{return JSON.parse(localStorage.getItem(key)||'null')||{date:localNow().slice(0,10),rows:[]};}catch{return {date:localNow().slice(0,10),rows:[]};}}),[query,setQuery]=useState(''),[error,setError]=useState(''),[unitFilter,setUnitFilter]=useState('all'),[bulk,setBulk]=useState({baseUnit:'',secondaryUnit:'',conversion:'',importUnit:'',saleRateUnit:'',purchaseRateUnit:''});
+ const [draft,setDraft]=useState(()=>{try{const saved=JSON.parse(localStorage.getItem(key)||'null');return saved?{...saved,rows:saved.rows.map(applyConfirmedStockUnits)}:{date:localNow().slice(0,10),rows:[]};}catch{return {date:localNow().slice(0,10),rows:[]};}}),[query,setQuery]=useState(''),[error,setError]=useState(''),[unitFilter,setUnitFilter]=useState('all'),[bulk,setBulk]=useState({baseUnit:'',secondaryUnit:'',conversion:'',importUnit:'',saleRateUnit:'',purchaseRateUnit:''});
  useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(draft));}catch{setError('Cannot save the import draft in this browser. Keep this window open.');}},[draft,key]);
  const update=(id,values)=>setDraft(previous=>({...previous,rows:previous.rows.map(row=>row.id===id?{...row,...values}:row)}));
  const incomplete=row=>row.include&&(!row.baseUnit||!row.importUnit||row.secondaryUnit&&!row.conversion||!row.saleRateUnit||!row.purchaseRateUnit);

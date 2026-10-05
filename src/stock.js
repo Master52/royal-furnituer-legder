@@ -1,3 +1,4 @@
+import {applyConfirmedStockUnits} from './stockImportProfile.js';
 export const STOCK_UNITS=['NOS','PCS','SHEET','BOX','PACKET','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
 export const STOCK_SCALE=100000000n;
 export function stockDecimal(value,{signed=false}={}){
@@ -25,7 +26,7 @@ export function parseStockCsv(text){
   for(const key of ['Item ID','Item Name*','Current stock','Sales Price','Purchase Price'])if(!headers.includes(key))throw new Error(`Missing CSV column: ${key}.`);
   const result=rows.slice(index+1).filter(r=>get(r,'Item ID').trim()).map(r=>({id:crypto.randomUUID(),sourceId:get(r,'Item ID').trim(),name:get(r,'Item Name*').trim().toUpperCase(),code:get(r,'Item code').trim(),quantity:get(r,'Current stock').trim(),salePrice:get(r,'Sales Price').trim(),purchasePrice:get(r,'Purchase Price').trim(),lowStock:get(r,'Low stock alert quantity').trim(),baseUnit:'',importUnit:'',secondaryUnit:'',conversion:'',saleRateUnit:'',purchaseRateUnit:'',include:get(r,'Item Name*').trim().toUpperCase()!=='GENERIC SALE'}));
   if(!result.length||result.length>500)throw new Error('Import between 1 and 500 items at a time.');
-  if(new Set(result.map(r=>r.sourceId)).size!==result.length)throw new Error('CSV contains duplicate Item IDs.');return result;
+  if(new Set(result.map(r=>r.sourceId)).size!==result.length)throw new Error('CSV contains duplicate Item IDs.');return result.map(applyConfirmedStockUnits);
 }
 export function stockInvoiceStatus(invoice,reviews,operations){
   const rows=reviews.filter(r=>r.invoiceId===invoice.id),affected=operations.filter(op=>op.invoiceId===invoice.id&&op.kind==='review'&&!op.reversed);
