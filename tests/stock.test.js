@@ -27,9 +27,16 @@ test('stock reads never create tabs and new items start at zero',()=>{const b=ac
 
 test('owner-confirmed units prefill only matching source IDs and preserve stock decimals and unconfirmed prices',async()=>{
  const {confirmedMyBillBookUnits,applyConfirmedStockUnits}=await import('../src/stockImportProfile.js');
- const ids=Object.keys(confirmedMyBillBookUnits),csv='Item ID,Item Name*,Current stock,Sales Price,Purchase Price\n'+ids.map((id,i)=>`${id},CONFIRMED ITEM ${i},${['574.09','472.83','85.53','6.988'][i]},350,260`).join('\n');
+ const ids=Object.keys(confirmedMyBillBookUnits).slice(0,4),csv='Item ID,Item Name*,Current stock,Sales Price,Purchase Price\n'+ids.map((id,i)=>`${id},CONFIRMED ITEM ${i},${['574.09','472.83','85.53','6.988'][i]},350,260`).join('\n');
  const rows=parseStockCsv(csv);
  assert.deepEqual(rows.slice(0,3).map(row=>row.baseUnit),['KG','KG','KG']);assert.deepEqual(rows.slice(0,3).map(row=>row.quantity),['574.09','472.83','85.53']);
  assert.equal(rows[3].baseUnit,'PCS');assert.equal(rows[3].importUnit,'BOX');assert.equal(convertStock(rows[3].quantity,rows[3].conversion),'6988');assert.ok(rows.every(row=>!row.saleRateUnit&&!row.purchaseRateUnit));
  const changed={...rows[3],conversion:'500'};assert.deepEqual(applyConfirmedStockUnits(changed),changed);const unrelated={...rows[3],sourceId:'unrelated-id',baseUnit:'',importUnit:'',secondaryUnit:'',conversion:''};assert.deepEqual(applyConfirmedStockUnits(unrelated),unrelated);
+});
+
+
+test('confirmed bearings and lock packages convert exported fractions into whole pieces',async()=>{
+ const {applyConfirmedStockUnits}=await import('../src/stockImportProfile.js');
+ const cases=[['13606a1b-437b-4d9b-b535-2dc9281bb408','0.44','PACKET','110'],['d832ba5d-1e6b-4d13-9ca1-d84df520f6ec','11.4','BOX','228'],['5ae29610-e9be-4ffe-b0f7-1192585052f0','1.45','BOX','29']];
+ for(const [sourceId,quantity,unit,expected] of cases){const row=applyConfirmedStockUnits({sourceId,quantity,baseUnit:'',importUnit:'',secondaryUnit:'',conversion:'',saleRateUnit:'',purchaseRateUnit:''});assert.equal(row.baseUnit,'PCS');assert.equal(row.importUnit,unit);assert.equal(convertStock(row.quantity,row.conversion),expected);assert.equal(row.saleRateUnit,'');assert.equal(row.purchaseRateUnit,'');}
 });

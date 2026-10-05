@@ -4,7 +4,10 @@ export const confirmedMyBillBookUnits={
   '4d98ac88-29a7-4486-9814-79132b9cb557':{baseUnit:'KG',importUnit:'KG'},
   '3a31f69a-48f2-4710-968f-ed47719b824c':{baseUnit:'KG',importUnit:'KG'},
   'df5d9ff4-35ba-42d0-9510-d4ac0e6e5daa':{baseUnit:'KG',importUnit:'KG'},
-  'b6b6ba7f-cf52-4b3d-b7aa-3bdb03312de6':{baseUnit:'PCS',importUnit:'BOX',secondaryUnit:'BOX',conversion:'1000'}
+  'b6b6ba7f-cf52-4b3d-b7aa-3bdb03312de6':{baseUnit:'PCS',importUnit:'BOX',secondaryUnit:'BOX',conversion:'1000'},
+  '13606a1b-437b-4d9b-b535-2dc9281bb408':{baseUnit:'PCS',importUnit:'PACKET',secondaryUnit:'PACKET',conversion:'250'},
+  'd832ba5d-1e6b-4d13-9ca1-d84df520f6ec':{baseUnit:'PCS',importUnit:'BOX',secondaryUnit:'BOX',conversion:'20'},
+  '5ae29610-e9be-4ffe-b0f7-1192585052f0':{baseUnit:'PCS',importUnit:'BOX',secondaryUnit:'BOX',conversion:'20'}
 };
 export function applyConfirmedStockUnits(row){
   const profile=confirmedMyBillBookUnits[row.sourceId];
