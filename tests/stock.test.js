@@ -170,3 +170,13 @@ test('new stock requests require versioned quantities while committed legacy ret
  const tab=b.tabs.get('StockOperations'),headers=tab.data[0],row={id:legacy.id,kind:'manual',payloadHash:hash,createdAt:'2026-10-06T00:00:00Z'};tab.data.push(headers.map(key=>row[key]??''));
  assert.equal(b.post('recordStock',legacy).ok,true);assert.equal(read(b).items[0].balance,'6988');
 });
+
+test('pending item edits show new settings without altering stock quantities or historical movements',async()=>{
+ const {applyPendingStock}=await import('../src/stock.js'),b=accountBackend(),data=opening(b),before=structuredClone(data),original=data.items[0];
+ const payload={id:'stock-background-edit001',_expectedRevision:0,item:{...original,name:'UPDATED SCREW',secondaryUnit:'PACKET',conversion:'100',purchaseRateUnit:'PACKET',saleRateMinor:250,balance:'0',revision:99}};
+ const queue=[{action:'updateStockItem',payload,queuedAt:'2026-10-06T00:00:00Z'}],projected=applyPendingStock(data,queue);
+ assert.equal(projected.items[0].name,'UPDATED SCREW');assert.equal(projected.items[0].conversion,'100');assert.equal(projected.items[0].balance,'6988');assert.equal(projected.items[0].revision,1);assert.equal(projected.items[0]._pending,true);assert.equal(projected.items[0].salePriceUpdatedAt,queue[0].queuedAt);assert.equal(projected.movements[0].conversion,'1000');assert.deepEqual(data,before);
+ assert.equal(applyPendingStock(data,[{...queue[0],rejected:true}]).items[0].name,original.name);
+ const result=b.post('updateStockItem',payload);assert.equal(result.ok,true,result.error);const confirmed=applyPendingStock(result.stock,queue);assert.equal(confirmed.items[0].revision,1);assert.equal(confirmed.items[0]._pending,undefined);assert.equal(confirmed.items[0].balance,'6988');
+ assert.equal(applyPendingStock(result.stock,[{...queue[0],payload:{...payload,id:'stock-background-edit002'}}]).items[0].revision,1);
+});

@@ -82,7 +82,18 @@ export function stockActivity(items,movements,operations,invoices,today){
 
 export function applyPendingStock(data,queue){
  const items=data.items.map(row=>({...row})),byId=new Map(items.map(row=>[row.id,row])),operations=[...data.operations],movements=[...data.movements],reviews=[...data.reviews],committed=new Set(operations.map(row=>row.id));
- for(const operation of queue){if(operation.invalid||operation.rejected)break;const p=operation.payload;const manual=operation.action==='recordStock'&&Array.isArray(p.movements);if(!manual&&(operation.action!=='reviewInvoiceStock'||p.reviewMode!=='invoice')||committed.has(p.id))continue;
+ for(const operation of queue){if(operation.invalid||operation.rejected)break;const p=operation.payload;if(committed.has(p.id))continue;
+  if(operation.action==='updateStockItem'){
+   const item=byId.get(p.item?.id);
+   if(!item||item.status==='deleted'||!Number.isSafeInteger(p._expectedRevision)||Number(item.revision||0)!==p._expectedRevision)continue;
+   const createdAt=operation.queuedAt||new Date().toISOString();
+   for(const key of ['name','code','category','baseUnit','secondaryUnit','conversion','lowStock','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit']){
+    if(Object.hasOwn(p.item,key)){if((key==='saleRateMinor'||key==='saleRateUnit')&&item[key]!==p.item[key])item.salePriceUpdatedAt=createdAt;if((key==='purchaseRateMinor'||key==='purchaseRateUnit')&&item[key]!==p.item[key])item.purchasePriceUpdatedAt=createdAt;item[key]=p.item[key];}
+   }
+   item.revision=p._expectedRevision+1;item.updatedAt=createdAt;item._pending=true;
+   operations.push({id:p.id,kind:'item-edit',createdAt,_pending:true});continue;
+  }
+  const manual=operation.action==='recordStock'&&Array.isArray(p.movements);if(!manual&&(operation.action!=='reviewInvoiceStock'||p.reviewMode!=='invoice')||committed.has(p.id))continue;
   const createdAt=operation.queuedAt||new Date().toISOString();operations.push({id:p.id,kind:manual?'manual':'review',invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,createdAt,_pending:true});
   for(const [index,row] of p.movements.entries()){const item=byId.get(row.stockItemId);if(!item)continue;const quantity=convertStock(row.quantity,row.unit===item.baseUnit?'1':item.conversion),signed=stockDecimal(quantity,{signed:true})*(manual?1n:p.invoiceType==='purchase'?1n:-1n);item.balance=stockText(stockDecimal(item.balance,{signed:true})+signed);movements.push({...row,id:p.id+'-pending-'+index,operationId:p.id,invoiceId:p.invoiceId,invoiceItemId:'',movementDate:p.movementDate,baseQuantity:stockText(signed),reason:p.reason,createdAt,_pending:true});}
   for(const id of p.reviewItemIds||[])reviews.push({id:p.id+'-pending-'+id,operationId:p.id,invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceItemId:id,status:p.movements.length?'updated':'no-impact',reason:p.reason,_pending:true});
