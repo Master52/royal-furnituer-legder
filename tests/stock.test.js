@@ -180,3 +180,18 @@ test('pending item edits show new settings without altering stock quantities or 
  const result=b.post('updateStockItem',payload);assert.equal(result.ok,true,result.error);const confirmed=applyPendingStock(result.stock,queue);assert.equal(confirmed.items[0].revision,1);assert.equal(confirmed.items[0]._pending,undefined);assert.equal(confirmed.items[0].balance,'6988');
  assert.equal(applyPendingStock(result.stock,[{...queue[0],payload:{...payload,id:'stock-background-edit002'}}]).items[0].revision,1);
 });
+
+test('multiple queued item edits retain each preview and chain revisions for repeated edits',async()=>{
+ const {applyPendingStock}=await import('../src/stock.js'),b=accountBackend(),secondId='stock-item-0000000000002';
+ const data=opening(b,[item(),item({id:secondId,sourceId:'second-model',code:'MODEL-2'})]);
+ const entries=[{id:itemId,revision:0,rate:200},{id:secondId,revision:0,rate:300},{id:itemId,revision:1,rate:400}];
+ const queue=entries.map((entry,index)=>({action:'updateStockItem',payload:{id:`stock-multi-edit-0000000${index+1}`,_expectedRevision:entry.revision,item:{...data.items.find(row=>row.id===entry.id),saleRateMinor:entry.rate}}}));
+ const projected=applyPendingStock(data,queue);assert.equal(projected.items[0].saleRateMinor,400);assert.equal(projected.items[0].revision,2);assert.equal(projected.items[1].saleRateMinor,300);assert.equal(projected.items[1].revision,1);assert.ok(projected.items.every(row=>row._pending));
+ for(let index=0;index<queue.length;index++){
+  const result=b.post('updateStockItem',queue[index].payload);assert.equal(result.ok,true,result.error);
+  const remaining=applyPendingStock(result.stock,queue.slice(index+1));assert.equal(remaining.items[0].saleRateMinor,400);assert.equal(remaining.items[1].saleRateMinor,300);
+ }
+ assert.equal(read(b).items[0].revision,2);assert.equal(read(b).items[0].balance,'6988');assert.equal(read(b).items[1].balance,'6988');assert.equal(read(b).movements.length,data.movements.length);
+ // Rejected earlier edits must not preview their dependent revisions as confirmed.
+ const rejected=applyPendingStock(data,[{...queue[0],rejected:true},...queue.slice(1)]);assert.equal(rejected.items[0].saleRateMinor,data.items[0].saleRateMinor);
+});

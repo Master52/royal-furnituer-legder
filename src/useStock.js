@@ -24,13 +24,26 @@ export default function useStock(endpoint,enabled){
   try{if(!navigator.locks)throw new Error('Use a browser with Web Locks support.');return await navigator.locks.request('rf.stock.upload',()=>callback(target));}catch(e){if(currentEndpoint.current===target){setError(e.message);setQueue(rows=>rows.map((row,index)=>index===0?{...row,failed:true}:row));}return false;}finally{working.current=false;setBusy(false);setTick(value=>value+1);}
  }
  async function save(action,payload){return run(async target=>{serializeRequest(target,payload,action);await mutate(target,rows=>{if(rows.length)throw new Error('Confirm pending stock updates first.');return [{action,payload}];});return send({action,payload},target);});}
- async function queueStock(action,payload){if(!enabled||!endpoint)return false;try{if(!['reviewInvoiceStock','recordStock','updateStockItem'].includes(action))throw new Error('Invalid stock queue action.');serializeRequest(endpoint,payload,action);await mutate(endpoint,rows=>{if(action==='updateStockItem'&&rows.length)throw new Error('Confirm pending stock updates before editing item settings.');if(rows.some(row=>row.failed||row.invalid||!['reviewInvoiceStock','recordStock'].includes(row.action)))throw new Error('Resolve the pending stock request first.');if(payload.invoiceId&&rows.some(row=>row.payload.invoiceId===payload.invoiceId))throw new Error('This invoice already has a queued stock update.');return [...rows,{action,payload,queuedAt:new Date().toISOString()}];});setError('');return true;}catch(e){setError(e.message);return false;}}
+ async function queueStock(action,payload){
+  if(!enabled||!endpoint)return false;
+  try{
+   if(!['reviewInvoiceStock','recordStock','updateStockItem'].includes(action))throw new Error('Invalid stock queue action.');
+   serializeRequest(endpoint,payload,action);
+   await mutate(endpoint,rows=>{
+    const compatible=action==='updateStockItem'?['updateStockItem']:['reviewInvoiceStock','recordStock'];
+    if(rows.some(row=>row.failed||row.invalid||!compatible.includes(row.action)))throw new Error('Resolve the pending stock request first.');
+    if(payload.invoiceId&&rows.some(row=>row.payload.invoiceId===payload.invoiceId))throw new Error('This invoice already has a queued stock update.');
+    return [...rows,{action,payload,queuedAt:new Date().toISOString()}];
+   });setError('');return true;
+  }catch(e){setError(e.message);return false;}
+ }
  async function retry(){return run(async target=>{const first=read(`rf.stock-pending:${target}`)[0];return first?send(first,target):false;});}
  async function discardRejected(){return run(async target=>{await mutate(target,rows=>{if(!rows[0]?.rejected)throw new Error('Only rejected requests can be discarded.');return rows.slice(1);});setError('');await reload();return true;});}
  useEffect(()=>{if(!busy&&pending&&!pending.failed&&!pending.invalid&&enabled)retry();},[pending,busy,enabled,endpoint,tick]);
  useEffect(()=>{const online=()=>{if(pending?.failed&&!pending.rejected)retry();};window.addEventListener('online',online);return()=>window.removeEventListener('online',online);},[pending,endpoint]);
+ const canQueueItemEdits=enabled&&Boolean(endpoint)&&(!busy||queue.length>0)&&queue.every(row=>!row.failed&&!row.invalid&&row.action==='updateStockItem');
  const optimistic=useMemo(()=>applyPendingStock(data,queue),[data,queue]);
  const items=useMemo(()=>optimistic.items.filter(item=>item.status!=='deleted'),[optimistic.items]);
  const archivedItems=useMemo(()=>optimistic.items.filter(item=>item.status==='deleted'),[optimistic.items]);
- return {...optimistic,items,archivedItems,busy,loading,error,pending,queue,reload,save,queueStock,queueReview:payload=>queueStock('reviewInvoiceStock',payload),retry,discardRejected};
+ return {...optimistic,items,archivedItems,busy,loading,error,pending,queue,canQueueItemEdits,reload,save,queueStock,queueReview:payload=>queueStock('reviewInvoiceStock',payload),retry,discardRejected};
 }
