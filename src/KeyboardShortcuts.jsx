@@ -32,7 +32,7 @@ export default function KeyboardShortcuts({onNavigate,onSettings,onSearch}){
     return;
    }
    const candidates=[...scope?.querySelectorAll('[data-hotkey]')||[]].filter(element=>element.dataset.hotkey===chord);
-   const focusedRow=document.activeElement?.closest('.invoice-item-editor');
+   const focusedRow=document.activeElement?.closest('.invoice-item-editor,.stock-pos-entry-row');
    const focusedRecord=document.activeElement?.closest('.activity-row');
    if(focusedRecord&&['alt+e','alt+p','alt+m'].includes(chord))return;
    const available=candidates.filter(element=>shortcutAvailable(element));

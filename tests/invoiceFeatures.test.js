@@ -39,7 +39,7 @@ test('legacy invoice catalogue suggestions are inferred by reads without creatin
  const b=accountBackend();b.post('createInvoice',checkout());b.tabs.delete('ItemCatalogue');const data=snapshot(b);assert.equal(data.catalogue.length,1);assert.equal(b.tabs.has('ItemCatalogue'),false);
 });
 test('catalogue selection uses the right rate, preserves matching-unit measurements and clears incompatible units',()=>{
- const record={id:'WINDOW',name:'WINDOW',billingUnit:'sqft',rateMinor:35000,saleRateMinor:35000,purchaseRateMinor:20000,costMinor:18000},item={description:'',rate:'',cost:'',billingUnit:'sqft',grouped:true,measurements:[{length:'3',width:'3'}]};
+ const record={id:'WINDOW',name:'WINDOW',billingUnit:'sqft',saleBillingUnit:'sqft',purchaseBillingUnit:'sqft',costBillingUnit:'sqft',rateMinor:35000,saleRateMinor:35000,purchaseRateMinor:20000,costMinor:18000},item={description:'',rate:'',cost:'',billingUnit:'sqft',grouped:true,measurements:[{length:'3',width:'3'}]};
  const sale=applyCatalogueItem(item,record,'sale');assert.equal(sale.rate,'350');assert.equal(sale.cost,'180');assert.deepEqual(sale.measurements,item.measurements);assert.equal(applyCatalogueItem(item,record,'purchase').rate,'200');assert.equal(applyCatalogueItem({...item,billingUnit:'kg'},record,'sale').measurements.length,1);assert.equal(catalogueKey('  3   Track Window '),'3 TRACK WINDOW');assert.equal(findCatalogue([record],'wind').length,1);
 });
 test('public statement text preserves chronological debit/credit balances and excludes costs and private notes',()=>{
@@ -54,4 +54,25 @@ test('image text wrapping preserves long words and unicode without overflowing i
 test('full and final split payments waive the remainder without counting it as cash',()=>{
  const b=accountBackend(),party=makeParty({name:'Settling customer',phone:'',address:'',openingDate:'2026-01-01',openingBalance:'680'},partyId);b.post('createParty',party);
  const receipt=makePartySettlement(snapshot(b),{recordType:'payment',partyId,category:'Sale',direction:'in',method:'Split',amount:'640',cashPortion:'600',dateTime:'2026-10-05T12:00'},'split-settlement-00000001');assert.equal(receipt.settlementDiscountMinor,4000);assert.equal(b.post('create',receipt).ok,true);const data=snapshot(b);assert.equal(accountBalances(data.parties,data.invoices,data.transactions,data.notes)[0].balance,0);assert.deepEqual(paymentMethodBalance(data.transactions),{Cash:60000,Online:4000});assert.equal(b.post('create',{...receipt,cashPortionMinor:50000,onlinePortionMinor:14000}).ok,false);
+});
+
+test('catalogue selection clears stale CP, preserves explicit zero and requires known price units',()=>{
+ const old={description:'OLD',billingUnit:'kg',rate:'100',cost:'50'};
+ const fresh={name:'NEW',billingUnit:'kg',saleBillingUnit:'kg',saleRateMinor:20000,costMinor:''};
+ assert.equal(applyCatalogueItem(old,fresh,'sale').cost,'');
+ assert.equal(applyCatalogueItem(old,{...fresh,costMinor:0,costBillingUnit:'kg'},'sale').cost,'0');
+ assert.equal(applyCatalogueItem(old,{...fresh,costMinor:5000,costBillingUnit:'nos'},'sale').cost,'');
+ assert.equal(applyCatalogueItem(old,{name:'LEGACY',billingUnit:'kg',rateMinor:20000,saleRateMinor:20000,costMinor:5000},'sale').rate,'');
+ assert.equal(applyCatalogueItem(old,fresh,'purchase').cost,'');
+});
+test('catalogue retains separate purchase and sale price units and does not rewrite issued invoices',()=>{
+ const b=accountBackend(),party=makeParty({name:'Mixed units',partyType:'supplier',phone:'',address:'',openingDate:'2026-01-01',openingBalance:'0'},partyId);assert.equal(b.post('createParty',party).ok,true);
+ const sale=makeInvoice({partyId,type:'sale',notes:'',invoiceDate:'2026-10-05',items:[{description:'MATERIAL',billingUnit:'kg',quantity:'1',rate:'100',cost:'50'}]},'invoice-mixed-unit-sale001');
+ const purchase=makeInvoice({partyId,type:'purchase',notes:'',invoiceDate:'2026-10-06',items:[{description:'MATERIAL',billingUnit:'nos',quantity:'1',rate:'20'}]},'invoice-mixed-unit-buy0001');
+ assert.equal(b.post('createInvoice',sale).ok,true);assert.equal(b.post('createInvoice',purchase).ok,true);
+ const data=snapshot(b),record=data.catalogue[0],draftItem={description:'OLD',billingUnit:'nos',cost:'999'};
+ const saleItem=applyCatalogueItem(draftItem,record,'sale'),purchaseItem=applyCatalogueItem(draftItem,record,'purchase');
+ assert.equal(saleItem.billingUnit,'kg');assert.equal(saleItem.rate,'100');assert.equal(saleItem.cost,'50');
+ assert.equal(purchaseItem.billingUnit,'nos');assert.equal(purchaseItem.rate,'20');assert.equal(purchaseItem.cost,'');
+ assert.equal(data.invoices.find(row=>row.id===sale.id).totalMinor,10000);assert.equal(data.invoices.find(row=>row.id===purchase.id).totalMinor,2000);
 });

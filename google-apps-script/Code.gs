@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.23.3';
+const BACKEND_VERSION = '1.23.8';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -129,7 +129,7 @@ function doPost(e) {
       const db = ensureSheet_(spreadsheet_());
       return json_({ok:true,transactions:visiblePayments_(spreadsheet_(),records_(db.sheet,db.headers)).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
     }
-    if(['listStock','importStock','createStockItem','updateStockItem','recordStock','reviewInvoiceStock','reverseStock'].includes(body.action)){
+    if(['listStock','importStock','createStockItem','updateStockItem','bulkUpdateStockItems','deleteStockItems','recordStock','reviewInvoiceStock','reverseStock'].includes(body.action)){
       {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
       try{return json_(stockAction_(body.action,body.transaction));}catch(error){if(!accountRequest_.writes&&!error.code)error.code='STOCK_REJECTED';throw error;}
     }
@@ -282,12 +282,12 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
-  StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
+  StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt','status'],
   StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
   StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
   StockReviews:['id','operationId','invoiceId','invoiceRevision','invoiceItemId','status','reason'],
   StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt','importMode'],
-  ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId'],
+  ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId','saleBillingUnit','purchaseBillingUnit','costBillingUnit'],
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
   Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],
   InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
@@ -296,7 +296,7 @@ const ACCOUNT_HEADERS = {
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={Parties:['partyType'],Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={ItemCatalogue:['saleBillingUnit','purchaseBillingUnit','costBillingUnit'],Parties:['partyType'],Invoices:['revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -460,13 +460,13 @@ function stageInvoicePayment_(ss,payment){
 function catalogueKey_(name){return String(name).normalize('NFKC').trim().replace(/\s+/g,' ').toUpperCase();}
 function mergeCatalogueInvoice_(map,invoice){
   if(invoice.status!=='issued')return;
-  const stamp=invoice.updatedAt||invoice.createdAt||'',source=invoice.id+':'+Number(invoice.revision||0);
+  const stamp=invoice.updatedAt||invoice.createdAt||'';
   for(const item of invoice.items||[]){
-    const id=catalogueKey_(item.description),previous=map.get(id);
-    if(previous&&String(previous.updatedAt||'')>stamp)continue;
-    const cost=item.costMinor==null||item.costMinor===''?previous?.costMinor??'':Number(item.costMinor);
-    const rate=Number(item.rateMinor),field=invoice.type==='sale'?'saleRateMinor':'purchaseRateMinor';
-    map.set(id,{...previous,id,name:id,billingUnit:item.billingUnit||'nos',rateMinor:rate,costMinor:cost,[field]:rate,updatedAt:stamp,sourceId:source});
+    const id=catalogueKey_(item.description),previous=map.get(id)||{};
+    if(String(previous.updatedAt||'')>stamp)continue;
+    const unit=item.billingUnit||'nos',field=invoice.type==='sale'?'saleRateMinor':'purchaseRateMinor',unitField=invoice.type==='sale'?'saleBillingUnit':'purchaseBillingUnit';
+    const knownCost=invoice.type==='sale'&&item.costMinor!=null&&item.costMinor!=='';
+    map.set(id,{...previous,id,name:id,billingUnit:unit,rateMinor:Number(item.rateMinor),[field]:Number(item.rateMinor),[unitField]:unit,costMinor:knownCost?Number(item.costMinor):previous.costMinor??'',costBillingUnit:knownCost?unit:previous.costBillingUnit||'',updatedAt:stamp,sourceId:invoice.id+':'+Number(invoice.revision||0)});
   }
 }
 function catalogueSnapshot_(ss,invoices=[]){const map=new Map(accountReadRows_(ss,'ItemCatalogue').map(row=>[row.id,row]));invoices.slice().sort((a,b)=>String(a.updatedAt||a.createdAt||'').localeCompare(String(b.updatedAt||b.createdAt||''))).forEach(invoice=>mergeCatalogueInvoice_(map,invoice));return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name));}
@@ -839,13 +839,13 @@ function stockSnapshot_(ss){
   if(new Set(operations.map(row=>row.id)).size!==operations.length)throw new Error('Duplicate stock operations. Repair the Sheet.');
   const committed=new Set(operations.map(op=>op.id)),reversed=new Set(operations.filter(op=>op.kind==='reversal').map(op=>op.reversesId));
   const originalItems=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
-  const byItem=new Map(originalItems.map(item=>[item.id,{...item,revision:0}]));
-  accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit&&item.baseUnit!=='UNIT')throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,revision:Number(version.revision),updatedAt:createdAt});});
+  const byItem=new Map(originalItems.map(item=>[item.id,{...item,revision:0,salePriceUpdatedAt:item.createdAt,purchasePriceUpdatedAt:item.createdAt}]));
+  accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit&&item.baseUnit!=='UNIT')throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,salePriceUpdatedAt:Number(fields.saleRateMinor)!==Number(item.saleRateMinor)||fields.saleRateUnit!==item.saleRateUnit?createdAt:item.salePriceUpdatedAt,purchasePriceUpdatedAt:Number(fields.purchaseRateMinor)!==Number(item.purchaseRateMinor)||fields.purchaseRateUnit!==item.purchaseRateUnit?createdAt:item.purchasePriceUpdatedAt,revision:Number(version.revision),updatedAt:createdAt});});
   const items=[...byItem.values()];
   const movements=accountReadRows_(ss,'StockMovements').filter(row=>committed.has(row.operationId));
   const reviews=accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId));
   const balances=new Map();movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
-  return {items:items.map(item=>({...item,saleRateMinor:Number(item.saleRateMinor),purchaseRateMinor:Number(item.purchaseRateMinor),balance:stockText_(balances.get(item.id)||BigInt(0))})),movements,reviews,operations:operations.map(op=>{const {payloadHash,...publicOp}=op;return {...publicOp,reversed:reversed.has(op.id)};}),openingDate:operations.find(op=>op.kind==='opening')?.openingDate||''};
+  return {items:items.map(item=>({...item,saleRateMinor:Number(item.saleRateMinor),purchaseRateMinor:Number(item.purchaseRateMinor),status:item.status||'active',balance:stockText_(balances.get(item.id)||BigInt(0))})),movements,reviews,operations:operations.map(op=>{const {payloadHash,...publicOp}=op;return {...publicOp,reversed:reversed.has(op.id)};}),openingDate:operations.find(op=>op.kind==='opening')?.openingDate||''};
 }
 function stockItem_(input,operationId){
   accountId_(input.id);const baseUnit=input.baseUnit,secondaryUnit=input.secondaryUnit||'';
@@ -864,9 +864,12 @@ function stockAction_(action,t){
   if(!t||typeof t!=='object')throw new Error('Missing stock request.');accountId_(t.id);
   const payloadHash=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify(stockCanonical_(t))).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join(''),operations=accountRows_(ss,'StockOperations'),previous=operations.find(op=>op.id===t.id);
   if(previous){if(previous.payloadHash!==payloadHash)throw new Error('This stock request ID was used with different values.');return {ok:true,id:t.id,stock:stockSnapshot_(ss)};}
+  if(['recordStock','reviewInvoiceStock'].includes(action)&&t.stockMovementSchemaVersion!==1)throw new Error('Update the app and review this saved stock request before retrying.');
   const snapshot=stockSnapshot_(ss),now=new Date().toISOString(),itemsById=new Map(snapshot.items.map(item=>[item.id,item]));
   const operation={id:t.id,kind:'',payloadHash,openingDate:'',invoiceId:'',invoiceRevision:'',reversesId:'',createdAt:now,importMode:''},items=[],versions=[],movements=[],reviews=[];
   function movement(item,entry,extra={}){
+    if(['recordStock','reviewInvoiceStock'].includes(action)&&(!Number.isSafeInteger(entry.expectedRevision)||entry.expectedRevision!==Number(item.revision||0)))throw new Error('Stock units or prices changed. Refresh and re-enter this movement.');
+    if(item.status==='deleted')throw new Error('This stock item was deleted. Select an active item.');
     const quantity=stockText_(stockDecimal_(entry.quantity,true));if(stockDecimal_(quantity,true)===BigInt(0))throw new Error('Stock movement must be nonzero.');
     if(!validDate_(entry.movementDate)||snapshot.openingDate&&entry.movementDate<snapshot.openingDate)throw new Error('Choose a stock movement date on or after opening stock.');
     const unit=entry.unit||item.baseUnit;if(unit!==item.baseUnit&&unit!==item.secondaryUnit)throw new Error('Choose the stock item’s base or secondary unit.');
@@ -874,6 +877,16 @@ function stockAction_(action,t){
     if(['PCS','NOS'].includes(item.baseUnit)&&stockDecimal_(baseQuantity,true)%STOCK_SCALE_&&!(action==='importStock'&&t.importMode==='as-exported'))throw new Error(item.name+' converts to fractional '+item.baseUnit+'. Confirm the whole-piece count or conversion; stock will not be rounded.');
     if(baseQuantity==='0')throw new Error('Stock movement rounds to zero.');
     movements.push({id:t.id+'-m'+(movements.length+1),operationId:t.id,stockItemId:item.id,movementDate:entry.movementDate,quantity,unit,conversion,baseQuantity,invoiceId:'',invoiceItemId:'',reason:accountText_(entry.reason||'',500,true),createdAt:now,...extra});
+  }
+  function updatePrices(){
+      if(t.priceUpdates!==undefined){
+        if(!Array.isArray(t.priceUpdates)||t.priceUpdates.length>100||new Set(t.priceUpdates.map(row=>row.stockItemId)).size!==t.priceUpdates.length)throw new Error('Invalid stock price updates.');
+        t.priceUpdates.forEach(change=>{const item=itemsById.get(change.stockItemId);if(!item||item.status==='deleted'||item.revision!==change.expectedRevision||!Number.isSafeInteger(change.expectedRevision))throw new Error('Stock prices changed. Refresh before updating prices.');
+          if(!t.movements.some(row=>row.stockItemId===item.id))throw new Error('Prices can only change for entered stock items.');
+          const normalized=stockItem_({...item,...(change.saleRateMinor!==undefined?{saleRateMinor:change.saleRateMinor}:{}),...(change.purchaseRateMinor!==undefined?{purchaseRateMinor:change.purchaseRateMinor}:{})},t.id);
+          const {id,sourceId,operationId,...fields}=normalized;versions.push({id:t.id+'-price'+(versions.length+1),operationId:t.id,stockItemId:item.id,revision:item.revision+1,...fields,status:'active',createdAt:now});
+        });
+      }
   }
   if(action==='importStock'||action==='createStockItem'){
     if(action==='importStock'&&snapshot.openingDate)throw new Error('Opening stock is already imported. Use stock adjustments instead of importing again.');
@@ -892,18 +905,30 @@ function stockAction_(action,t){
         if(opening>0)movement(item,{quantity:stockText_(opening),unit:input.importUnit,movementDate:t.openingDate,reason:'Opening stock import'});
       }
     });
-  }else if(action==='updateStockItem'){
-    const existing=itemsById.get(t.item?.id);
-    if(!existing||!Number.isSafeInteger(t._expectedRevision)||existing.revision!==t._expectedRevision)throw new Error('Stock item changed. Refresh and edit its latest settings.');
-    if(t.item.baseUnit!==existing.baseUnit&&existing.baseUnit!=='UNIT')throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
-    if(existing.baseUnit==='UNIT'&&t.item.baseUnit!=='UNIT'&&['PCS','NOS'].includes(t.item.baseUnit)&&stockDecimal_(existing.balance,true)%STOCK_SCALE_)throw new Error('The exported quantity is fractional. Assign its actual source unit, such as BOX, PACKET or KG, rather than changing it to pieces.');
-    const normalized=stockItem_({...t.item,sourceId:existing.sourceId},t.id);
+  }else if(['updateStockItem','bulkUpdateStockItems','deleteStockItems'].includes(action)){
+    let edits;
+    if(action==='updateStockItem')edits=[{item:t.item,expectedRevision:t._expectedRevision}];
+    else{
+      if(!Array.isArray(t.targets)||!t.targets.length||t.targets.length>500||new Set(t.targets.map(row=>row.id)).size!==t.targets.length)throw new Error('Select 1–500 distinct stock items.');
+      const patch=t.patch||{};
+      if(action==='bulkUpdateStockItems'&&(!Object.keys(patch).length||Object.keys(patch).some(key=>!['category','lowStock','saleRateMinor','purchaseRateMinor'].includes(key))))throw new Error('Choose category, prices or low-stock threshold to edit.');
+      edits=t.targets.map(row=>({item:{...itemsById.get(row.id),...patch,id:row.id},expectedRevision:row.revision}));
+    }
+    edits.forEach(({item:input,expectedRevision})=>{
+
+    const existing=itemsById.get(input?.id);
+    if(!existing||existing.status==='deleted'||!Number.isSafeInteger(expectedRevision)||existing.revision!==expectedRevision)throw new Error('Stock item changed. Refresh and edit its latest settings.');
+    if(input.baseUnit!==existing.baseUnit&&existing.baseUnit!=='UNIT')throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
+    if(existing.baseUnit==='UNIT'&&input.baseUnit!=='UNIT'&&['PCS','NOS'].includes(input.baseUnit)&&stockDecimal_(existing.balance,true)%STOCK_SCALE_)throw new Error('The exported quantity is fractional. Assign its actual source unit, such as BOX, PACKET or KG, rather than changing it to pieces.');
+    const normalized=stockItem_({...input,sourceId:existing.sourceId},t.id);
     if(snapshot.items.some(item=>item.id!==existing.id&&catalogueKey_(item.name)===catalogueKey_(normalized.name)&&catalogueKey_(item.code)===catalogueKey_(normalized.code)))throw new Error('Another stock item already uses this name/model.');
     const {id,sourceId,operationId,...fields}=normalized;
-    versions.push({id:t.id+'-item',operationId:t.id,stockItemId:existing.id,revision:existing.revision+1,...fields,createdAt:now});operation.kind='item-edit';
+    versions.push({id:t.id+'-item'+(versions.length+1),operationId:t.id,stockItemId:existing.id,revision:existing.revision+1,...fields,status:action==='deleteStockItems'?'deleted':'active',createdAt:now});operation.kind=action==='deleteStockItems'?'item-delete':'item-edit';
+    });
   }else if(action==='recordStock'){
     if(!snapshot.openingDate)throw new Error('Import opening stock before recording movements.');operation.kind='manual';
-    const item=itemsById.get(t.stockItemId);if(!item)throw new Error('Select a stock item.');movement(item,t);
+    if(Array.isArray(t.movements)){if(!t.movements.length||t.movements.length>100)throw new Error('Enter 1–100 stock movements.');t.movements.forEach(row=>{const item=itemsById.get(row.stockItemId);if(!item)throw new Error('Select a stock item.');movement(item,{...row,movementDate:t.movementDate,reason:t.reason});});updatePrices();}
+    else{const item=itemsById.get(t.stockItemId);if(!item)throw new Error('Select a stock item.');movement(item,t);}
   }else if(action==='reviewInvoiceStock'){
     if(!snapshot.openingDate)throw new Error('Import opening stock before reviewing invoices.');
     const invoice=accountRows_(ss,'Invoices').find(row=>row.id===t.invoiceId);
@@ -911,6 +936,22 @@ function stockAction_(action,t){
     if(snapshot.operations.some(op=>op.kind==='review'&&op.invoiceId===invoice.id&&!op.reversed&&Number(op.invoiceRevision)!==t.invoiceRevision))throw new Error('Reverse the previous stock updates before reviewing this edited invoice.');
     const invoiceItems=accountRows_(ss,'InvoiceItems').filter(item=>item.invoiceId===invoice.id&&(item.versionId||'')===(invoice.itemVersion||''));
     const allowed=new Set(invoiceItems.map(item=>item.id)),handled=new Set(snapshot.reviews.filter(row=>row.invoiceId===invoice.id).map(row=>row.invoiceItemId));
+    operation.kind='review';operation.invoiceId=invoice.id;operation.invoiceRevision=t.invoiceRevision;
+    if(t.reviewMode==='invoice'){
+      if(!validDate_(t.movementDate)||t.movementDate<snapshot.openingDate)throw new Error('Choose a movement date on or after opening stock.');
+      // Invoice-level review: independently entered materials have no invoice-item mapping.
+      const remaining=invoiceItems.filter(item=>!handled.has(item.id));
+      if(!remaining.length)throw new Error('This invoice is already reviewed.');
+      if(!Array.isArray(t.movements)||t.movements.length>100)throw new Error('Choose up to 100 stock materials.');
+      const reason=accountText_(t.reason||'',500,true);
+      t.movements.forEach(input=>{
+        const item=itemsById.get(input.stockItemId);if(!item)throw new Error('Select a stock material.');
+        const quantity=stockDecimal_(input.quantity);if(quantity<=0)throw new Error('Enter a positive material quantity.');
+        movement(item,{...input,quantity:stockText_(invoice.type==='sale'?-quantity:quantity),movementDate:t.movementDate,reason},{invoiceId:invoice.id});
+      });
+      updatePrices();
+      remaining.forEach((item,index)=>reviews.push({id:t.id+'-r'+(index+1),operationId:t.id,invoiceId:invoice.id,invoiceRevision:t.invoiceRevision,invoiceItemId:item.id,status:t.movements.length?'updated':'no-impact',reason}));
+    }else{
     if(!Array.isArray(t.entries)||!t.entries.length||t.entries.length>50)throw new Error('Choose invoice items to review.');
     operation.kind='review';operation.invoiceId=invoice.id;operation.invoiceRevision=t.invoiceRevision;
     t.entries.forEach((entry,index)=>{
@@ -922,6 +963,7 @@ function stockAction_(action,t){
       }else if(entry.movements?.length)throw new Error('No-impact items cannot contain stock movements.');
       reviews.push({id:t.id+'-r'+(index+1),operationId:t.id,invoiceId:invoice.id,invoiceRevision:t.invoiceRevision,invoiceItemId:entry.invoiceItemId,status:entry.status,reason});
     });
+    }
   }else if(action==='reverseStock'){
     const original=snapshot.operations.find(op=>op.id===t.reversesId);
     if(!original||original.reversed||!['manual','review'].includes(original.kind))throw new Error('Choose an active stock update to reverse.');

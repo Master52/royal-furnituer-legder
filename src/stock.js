@@ -17,6 +17,25 @@ export function convertStock(quantity,factor='1'){
   return stockText(product/STOCK_SCALE);
 }
 export function validateStockBaseQuantity(quantity,unit){const value=stockDecimal(quantity,{signed:true});if(['PCS','NOS'].includes(unit)&&value%STOCK_SCALE)throw new Error(`${quantity} ${unit} is fractional. Confirm the whole-piece count or conversion; it will not be rounded.`);return quantity;}
+// Estimated value at the current purchase rate, rounded once to the nearest paisa.
+export function stockValueMinor(item){
+ const quantity=stockDecimal(item.balance,{signed:true});if(quantity===0n)return 0;
+ const rate=Number(item.purchaseRateMinor);if(!Number.isSafeInteger(rate)||rate<=0)return null;
+ const unit=item.purchaseRateUnit||item.baseUnit;
+ if(unit!==item.baseUnit&&(!item.secondaryUnit||unit!==item.secondaryUnit))return null;
+ const factor=unit===item.baseUnit?STOCK_SCALE:stockDecimal(item.conversion);if(factor<=0n)return null;
+ const product=quantity*BigInt(rate),magnitude=product<0n?-product:product;
+ const rounded=(magnitude+factor/2n)/factor,result=Number(product<0n?-rounded:rounded);
+ return Number.isSafeInteger(result)?result:null;
+}
+export function stockMetrics(items){
+ const totals=new Map();let low=0,out=0,unconfigured=0;
+ for(const item of items){const balance=stockDecimal(item.balance,{signed:true});if(balance<=0n)out++;if(item.lowStock!==''&&item.lowStock!=null&&balance<=stockDecimal(item.lowStock))low++;
+  if(item.baseUnit==='UNIT'){unconfigured++;continue;}
+  totals.set(item.baseUnit,(totals.get(item.baseUnit)||0n)+balance);
+ }
+ return {count:items.length,low,out,unconfigured,totals:[...totals].sort(([a],[b])=>a.localeCompare(b)).map(([unit,quantity])=>({unit,quantity:stockText(quantity)}))};
+}
 export function stockBalance(item,movements){return stockText(movements.filter(m=>m.stockItemId===item.id).reduce((sum,m)=>sum+stockDecimal(m.baseQuantity,{signed:true}),0n));}
 export function parseStockCsv(text){
   const rows=[];let row=[],cell='',quoted=false;
@@ -50,3 +69,24 @@ export function stockImportItems(rows,asExported=false){return rows.filter(row=>
   const baseQuantity=convertStock(quantity,factor);if(!asExported)validateStockBaseQuantity(baseQuantity,row.baseUnit);
   return {id:row.id,sourceId:row.sourceId,name:row.name,code:row.code,category:'',baseUnit:row.baseUnit,secondaryUnit:row.secondaryUnit,conversion:row.secondaryUnit?row.conversion:'1',importUnit:row.importUnit,quantity,lowStock:row.lowStock===''?'':convertStock(row.lowStock,factor),saleRateUnit:row.saleRateUnit,purchaseRateUnit:row.purchaseRateUnit,saleRateMinor:stockPrice(row.salePrice),purchaseRateMinor:stockPrice(row.purchasePrice)};
 });}
+
+export function stockActivity(items,movements,operations,invoices,today){
+ const cutoff=new Date(`${today}T00:00:00Z`);cutoff.setUTCDate(cutoff.getUTCDate()-29);const since=cutoff.toISOString().slice(0,10);
+ const sales=new Map(invoices.filter(invoice=>invoice.type==='sale'&&(!invoice.status||invoice.status==='issued')).map(invoice=>[invoice.id,Number(invoice.revision||0)]));
+ const active=new Set(operations.filter(op=>op.kind==='review'&&!op.reversed&&sales.has(op.invoiceId)&&Number(op.invoiceRevision||0)===sales.get(op.invoiceId)).map(op=>op.id));
+ const counts=new Map();
+ for(const row of movements){if(!active.has(row.operationId)||row.movementDate<since||row.movementDate>today||stockDecimal(row.baseQuantity,{signed:true})>=0n)continue;const ids=counts.get(row.stockItemId)||new Set();ids.add(row.operationId);counts.set(row.stockItemId,ids);}
+ const fast=new Set(),slow=new Set();for(const item of items){const count=counts.get(item.id)?.size||0;if(count>=3)fast.add(item.id);else if(stockDecimal(item.balance,{signed:true})>0n)slow.add(item.id);}
+ return {fast,slow,counts,since};
+}
+
+export function applyPendingStock(data,queue){
+ const items=data.items.map(row=>({...row})),byId=new Map(items.map(row=>[row.id,row])),operations=[...data.operations],movements=[...data.movements],reviews=[...data.reviews],committed=new Set(operations.map(row=>row.id));
+ for(const operation of queue){if(operation.invalid||operation.rejected)break;const p=operation.payload;const manual=operation.action==='recordStock'&&Array.isArray(p.movements);if(!manual&&(operation.action!=='reviewInvoiceStock'||p.reviewMode!=='invoice')||committed.has(p.id))continue;
+  const createdAt=operation.queuedAt||new Date().toISOString();operations.push({id:p.id,kind:manual?'manual':'review',invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,createdAt,_pending:true});
+  for(const [index,row] of p.movements.entries()){const item=byId.get(row.stockItemId);if(!item)continue;const quantity=convertStock(row.quantity,row.unit===item.baseUnit?'1':item.conversion),signed=stockDecimal(quantity,{signed:true})*(manual?1n:p.invoiceType==='purchase'?1n:-1n);item.balance=stockText(stockDecimal(item.balance,{signed:true})+signed);movements.push({...row,id:p.id+'-pending-'+index,operationId:p.id,invoiceId:p.invoiceId,invoiceItemId:'',movementDate:p.movementDate,baseQuantity:stockText(signed),reason:p.reason,createdAt,_pending:true});}
+  for(const id of p.reviewItemIds||[])reviews.push({id:p.id+'-pending-'+id,operationId:p.id,invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceItemId:id,status:p.movements.length?'updated':'no-impact',reason:p.reason,_pending:true});
+  for(const price of p.priceUpdates||[]){const item=byId.get(price.stockItemId);if(!item)continue;for(const key of ['saleRateMinor','purchaseRateMinor'])if(price[key]!==undefined){item[key]=price[key];item[key==='saleRateMinor'?'salePriceUpdatedAt':'purchasePriceUpdatedAt']=createdAt;}item.revision=Number(item.revision||0)+1;}
+ }
+ return {...data,items,movements,reviews,operations};
+}

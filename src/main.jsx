@@ -26,6 +26,7 @@ import './indicators.css';
 import PaymentEntry from './PaymentEntry.jsx';
 import TransactionDetails from './TransactionDetails.jsx';
 import SyncStatus from './SyncStatus.jsx';
+import useStock from './useStock.js';
 import {invoiceNoteRevision} from './accounts.js';
 import {planBulkDelete} from './bulkDelete.js';
 import ActivityTable from './ActivityTable.jsx';
@@ -64,6 +65,8 @@ function App() {
   const pending=outbox[0]||null;
   const accountsEnabled=versionAtLeast(connectionInfo?.version,'1.8.0');
   const accounts=useAccounts(endpoint,accountsEnabled);
+  const stockEnabled=accountsEnabled&&versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.23.8');
+  const stock=useStock(endpoint,stockEnabled);
   useEffect(()=>{if(accounts.loaded&&!accounts.cached&&accounts.backendVersion&&accounts.backendVersion!==connectionInfo?.version)rememberInfo(endpoint,{backendVersion:accounts.backendVersion});},[accounts.loaded,accounts.cached,accounts.backendVersion,connectionInfo?.version,endpoint]);
   const [period, setPeriod] = useState('month');
   const [range, setRange] = useState(() => periodRange('month'));
@@ -461,6 +464,7 @@ function App() {
   }
   async function connect(event) {
     event.preventDefault(); setError('');
+    if(stock.busy||stock.pending){setError('Resolve pending stock updates before changing the Sheet connection.');return;}
     if (accounts.busy) { setError('Wait for the party or invoice request to finish.'); return; }
     if (editing) { setError('Finish or cancel your edit before changing connections.'); return; }
     if (pending && endpoint) { setError('Resolve the pending payment before changing connections.'); return; }
@@ -481,6 +485,7 @@ function App() {
     finally { lock.current = false; setBusy(false); }
   }
   async function disconnect() {
+    if(stock.busy||stock.pending){setError('Resolve pending stock updates before disconnecting.');return;}
     if (lock.current) return;
     if (accounts.pending || accounts.busy) { setError('Resolve the saved party or invoice request before disconnecting.'); return; }
     if (pending) {setError('Resolve pending payments before disconnecting.');return;}
@@ -530,6 +535,7 @@ function App() {
       <SyncStatus endpoint={endpoint} accounts={accounts} outbox={outbox} synced={synced} refreshing={refreshing} readError={refreshReadError||(error&&!synced?error:'')} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')}/>
       {accounts.catalogueWarning&&<p className="help" role="status">{accounts.catalogueWarning} Defaults can still be recovered from saved invoices.</p>}
       {!accounts.pending&&accounts.lastInvoice&&<p className="notice" role="status">Invoice {accounts.lastInvoice.number} saved to Google Sheets. <button className="outline" onClick={()=>setInvoiceOpenRequest({id:accounts.lastInvoice.id,request:Date.now()})}>View invoice</button></p>}
+      {stock.pending&&<p role="status" className={stock.pending.failed||stock.pending.invalid?'error':'notice'}>{stock.pending.failed||stock.pending.invalid?'A stock upload needs attention. Open Stock to retry or review it.':`${stock.queue.length} stock update(s) saving in background.`}</p>}
       {transactionDetail&&<TransactionDetails preferences={preferences} initialAction={transactionSelection?.action} onPreparePrint={async()=>{const fresh=accountsEnabled?await accounts.reload({fresh:true}):await request(endpoint);const record=fresh?.transactions.find(row=>row.id===transactionDetail.id);if(!record)throw new Error('Refresh and confirm this payment before printing.');return record;}} onEdit={()=>{setTransactionSelection(null);beginEdit(transactionDetail);}} onDelete={()=>{setTransactionSelection(null);deleteTransaction(transactionDetail);}} transaction={transactionDetail} duplicate={duplicateIds.has(transactionDetail.id)} queued={outbox.filter(item=>item.id===transactionDetail.id).at(-1)} onClose={()=>setTransactionSelection(null)}/>}
       {paymentOpen&&<AccountDialog className="payment-dialog" title={editing?'Edit payment':form.recordType==='transfer'?'Cash ↔ Online exchange':form.recordType==='adjustment'?'Adjust a balance':form.partyId?`${form.direction==='in'?'Receive payment':form.direction==='out'?'Make payment':'Record payment'} · ${form.party}`:'Record Payment'} busy={busy} onClose={closePayment}>
         {error&&<p className="error" role="alert">{error}</p>}
@@ -537,7 +543,7 @@ function App() {
         <PaymentEntry compact splitEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} parties={accounts.parties} partyBalances={accounts.partyBalances} balancesLoaded={accounts.loaded} balancesCached={accounts.cached} balancesRefreshing={accounts.refreshing} fullFinalEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.16.0')} settlementBlocked={!!pending||!!accounts.pending||accounts.busy} accountsEnabled={accountsEnabled} editing={editing} cancelEdit={closePayment} returnToPayment={startNew} form={form} update={update} onPartyChange={(name,id)=>setForm(previous=>paymentPartySelection(previous,name,id))} chooseCategory={chooseCategory} save={save} formRef={formRef} amountRef={amountRef} busy={busy} refreshing={refreshing} pending={pending} endpoint={endpoint} rows={rows} refresh={refresh} openHistory={()=>{closePayment();setView('history');}} focusAndCenter={focusAndCenter} expectedCashMinor={expectedCashForEntry} expectedOnlineMinor={expectedOnlineForEntry}/>
       </AccountDialog>}
       <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel catalogueEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} splitEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} partyTypesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.21.0')} partyTransactions={rows} onTransaction={record=>openActivity({kind:'payment',record})} partyInvoicePaymentEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.20.0')} invoiceCheckoutEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.19.0')} itemDescriptionsEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.2')} measurementEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.0')} openingBalanceDeletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.1')} challanEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.13.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.12.0')} deletionEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.11.0')} noteOpenRequest={noteOpenRequest} notesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.10.0')} invoiceEditingEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.9.0')} invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} partyOpenRequest={partyOpenRequest} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
-      {view==='stock'&&<Suspense fallback={<p role="status">Loading stock workspace…</p>}><StockPanel key={endpoint} endpoint={endpoint} enabled={accountsEnabled&&versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.23.3')} accounts={accounts}/></Suspense>}
+      {view==='stock'&&<Suspense fallback={<p role="status">Loading stock workspace…</p>}><StockPanel key={endpoint} stock={stock} endpoint={endpoint} enabled={stockEnabled} accounts={accounts}/></Suspense>}
       <div className={`report-view ${view==='accounts'||view==='stock'?'screen-hidden':''}`}>
       <section className="period-bar"><div><span className="calendar-icon">▦</span><select data-hotkey="alt+f" aria-keyshortcuts="Alt+F" aria-label="Report period" value={period} onChange={e => selectPeriod(e.target.value)}><option value="month">This month</option><option value="today">Today</option><option value="last">Last month</option><option value="custom">Custom period</option></select></div><div className="date-range"><input data-hotkey="alt+shift+f" aria-keyshortcuts="Alt+Shift+F" aria-label="Start date" type="date" value={range[0]} onChange={e => {setPeriod('custom');setRange([e.target.value,range[1]]);}}/><span>—</span><input data-hotkey="alt+shift+t" aria-keyshortcuts="Alt+Shift+T" aria-label="End date" type="date" value={range[1]} onChange={e => {setPeriod('custom');setRange([range[0],e.target.value]);}}/></div><button data-hotkey="alt+r" aria-keyshortcuts="Alt+R" data-hotkey-label="Refresh records" className="refresh" disabled={busy || refreshing || !endpoint} onClick={() => {refresh();}}>{refreshing ? '◌ Updating…' : '↻ Refresh'}</button></section>
       {range[0] > range[1] && <p className="error">The start date must be on or before the end date.</p>}
@@ -548,7 +554,7 @@ function App() {
     </main>
     <nav className="mobile-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='stock'?5:index+1}`} key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" onClick={openSettings}><span>⚙</span>Settings</button></nav>
     <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} aria-labelledby="settings-title" onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><p className="eyebrow">SHOP LEDGER</p><h2 id="settings-title">Settings & sheet setup</h2></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
-      {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy} pending={pending||accounts.pending} openTweak={openTweak}/></Suspense>}
+      {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy||stock.busy} pending={pending||accounts.pending||stock.pending} openTweak={openTweak}/></Suspense>}
 
     </dialog>
   </>;

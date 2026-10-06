@@ -12,7 +12,7 @@ export function shortcutAvailable(element,includeDisabled=false){
 }
 export function shortcutScope(){return [...document.querySelectorAll('dialog[open]')].at(-1)||document.querySelector('main');}
 export function activateShortcut(element){
-  element.closest('details:not([open])')?.setAttribute('open','');
+  if(!element.matches('summary'))element.closest('details:not([open])')?.setAttribute('open','');
   element.focus({preventScroll:true});
   element.scrollIntoView?.({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});
   if(element.matches('button,summary,input[type=checkbox],input[type=radio]'))element.click();

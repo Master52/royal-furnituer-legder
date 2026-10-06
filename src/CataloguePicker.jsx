@@ -1,5 +1,5 @@
 import React,{useId,useMemo,useState} from 'react';
-import {findCatalogue,catalogueRate} from './catalogue.js';
+import {findCatalogue,catalogueRate,catalogueUnit} from './catalogue.js';
 import {money} from './ledger.js';
 export default function CataloguePicker({catalogue=[],item,index,type,inputRef,onChange,onSelect,onCompositionEnd}){
  const id=useId(),[open,setOpen]=useState(false),[active,setActive]=useState(0);
@@ -11,5 +11,5 @@ export default function CataloguePicker({catalogue=[],item,index,type,inputRef,o
  if(['ArrowUp','ArrowDown'].includes(event.key)&&matches.length){event.preventDefault();setOpen(true);setActive(previous=>Math.max(0,Math.min(matches.length-1,previous+(event.key==='ArrowDown'?1:-1))));}
  else if(event.key==='Enter'&&expanded){event.preventDefault();if(matches.length)select(matches[current]);else setOpen(false);}
  else if(event.key==='Escape'&&expanded){event.preventDefault();event.stopPropagation();setOpen(false);}
- }}/>{expanded&&<div id={id} role="listbox" aria-label="Item catalogue" className="invoice-party-options catalogue-options">{matches.map((record,i)=><button type="button" role="option" id={`${id}-${i}`} key={record.id} tabIndex={-1} aria-selected={i===current} className={i===current?'active':''} onMouseDown={event=>event.preventDefault()} onClick={()=>select(record)}><strong>{record.name}</strong><small>{String(record.billingUnit||'nos').toUpperCase()} · {money(catalogueRate(record,type))}</small></button>)}{!matches.length&&<p>New item — added to the catalogue when this invoice is saved.</p>}</div>}</label>;
+ }}/>{expanded&&<div id={id} role="listbox" aria-label="Item catalogue" className="invoice-party-options catalogue-options">{matches.map((record,i)=><button type="button" role="option" id={`${id}-${i}`} key={record.id} tabIndex={-1} aria-selected={i===current} className={i===current?'active':''} onMouseDown={event=>event.preventDefault()} onClick={()=>select(record)}><strong>{record.name}</strong><small>{catalogueUnit(record,type).toUpperCase()} · {Number.isSafeInteger(catalogueRate(record,type))?money(catalogueRate(record,type)):'Confirm unit and price'}</small></button>)}{!matches.length&&<p>New item — added to the catalogue when this invoice is saved.</p>}</div>}</label>;
 }
