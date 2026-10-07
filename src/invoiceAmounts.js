@@ -1,4 +1,12 @@
 export const MAX_MINOR = 100000000000;
+// Round after discounts; 50 paise rounds up. Keep the signed adjustment explicit.
+export function invoiceRounding(total, enabled = false) {
+  if (typeof enabled !== 'boolean') throw new Error('Invalid auto round-off option.');
+  if (!Number.isSafeInteger(total) || total <= 0 || total > MAX_MINOR) throw new Error('Invoice total must be positive and within the supported amount limit.');
+  const rounded = enabled ? Math.floor((total + 50) / 100) * 100 : total;
+  if (rounded <= 0) throw new Error('Rounded invoice total must be positive. Turn off auto round-off for amounts below ₹0.50.');
+  return {autoRoundOff: enabled, roundOffMinor: rounded - total, totalMinor: rounded};
+}
 export function minor(value, label = 'amount') {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value).trim());
   const amount = match ? Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0')) : NaN;
@@ -16,4 +24,3 @@ export function invoiceDiscount(subtotal,mode='amount',value='0'){
   if(amount>subtotal)throw new Error('Invoice discount cannot exceed the subtotal after existing item discounts.');
   return {discountMode:mode,discountValue:entered,invoiceDiscountMinor:amount};
 }
-

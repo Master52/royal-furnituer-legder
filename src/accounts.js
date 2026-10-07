@@ -1,5 +1,5 @@
 import {blankCheckout} from './invoiceCheckout.js';
-import {MAX_MINOR,minor,invoiceDiscount} from './invoiceAmounts.js';
+import {MAX_MINOR,minor,invoiceDiscount,invoiceRounding} from './invoiceAmounts.js';
 import {scaledInput,draftMeasurements,billingQuantity_,billingPrice_,measurementDraftFromItem} from './measurements.js';
 import { paymentMethodText, localNow, transactionIntegrityIssue, duplicateTransactionIds, hasSettlement, SHOP_TIMEZONE } from './ledger.js';
 
@@ -9,7 +9,7 @@ export function validDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '',itemNote:'',grouped:false,billingUnit:'',measurementUnit:'feet',measurementMode:'quantity',measurements:[] });
-export const blankInvoice = () => ({ partyId: '', walkIn:false, paymentWithInvoice:false, discountMode:'amount', discount:'0', checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
+export const blankInvoice = () => ({ partyId: '', walkIn:false, paymentWithInvoice:false, discountMode:'amount', discount:'0', autoRoundOff:false, checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
 export const PARTY_TYPES = {customer:'Customer',supplier:'Supplier',lead:'Lead',karigar:'Karigar',both:'Customer & Supplier'};
 export function makeParty(form, id = crypto.randomUUID()) {
   const partyType=form.partyType||'';
@@ -47,8 +47,9 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
   if (totalMinor <= 0 || totalMinor > MAX_MINOR || costTotalMinor > MAX_MINOR) throw new Error('Invoice total must be positive and within the supported amount limit.');
   const discount=invoiceDiscount(totalMinor,form.discountMode||'amount',form.discount||'0');
   totalMinor-=discount.invoiceDiscountMinor;
-  if(totalMinor<=0)throw new Error('Invoice total after discount must be positive.');
-  return { id, schemaVersion: 1, invoiceDiscountSchemaVersion:1,...discount,invoicePaymentSchemaVersion:1,...(form.walkIn?{walkIn:true}:{}),...(form.walkIn||form.paymentWithInvoice||form.paymentId===`${id}-payment`?{paymentId:`${id}-payment`}:{}), measurementSchemaVersion: 1, itemDescriptionSchemaVersion: 1, partyId: form.walkIn?'':form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
+  const rounding=invoiceRounding(totalMinor,form.autoRoundOff??false);
+  totalMinor=rounding.totalMinor;
+  return { id, schemaVersion: 1, invoiceDiscountSchemaVersion:1,...discount,invoiceRoundingSchemaVersion:1,...rounding,invoicePaymentSchemaVersion:1,...(form.walkIn?{walkIn:true}:{}),...(form.walkIn||form.paymentWithInvoice||form.paymentId===`${id}-payment`?{paymentId:`${id}-payment`}:{}), measurementSchemaVersion: 1, itemDescriptionSchemaVersion: 1, partyId: form.walkIn?'':form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
 }
 
 export function findParties(parties, query, limit = 8) {
@@ -155,7 +156,7 @@ export function accountBalances(parties,invoices,transactions,notes=[]){
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }
 export function invoiceDraftFromRecord(saved){
-  return {...blankInvoice(),partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{cashPortion:saved.payment.cashPortionMinor?String(Number(saved.payment.cashPortionMinor)/100):'',onlinePortion:'',amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
+  return {...blankInvoice(),partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',autoRoundOff:saved.autoRoundOff===true||saved.autoRoundOff==='true',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{cashPortion:saved.payment.cashPortionMinor?String(Number(saved.payment.cashPortionMinor)/100):'',onlinePortion:'',amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
 }
 
 

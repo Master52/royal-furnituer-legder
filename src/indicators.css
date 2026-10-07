@@ -37,8 +37,6 @@
   html .invoice-open-row[data-tone] .party-invoice-amount {color:var(--tone-ink)}
   html .history-record[data-tone] {border-left:3px solid var(--tone-ink)}
   html .history-record[data-tone] .history-record-open>strong {color:var(--tone-ink)}
-  html .sync-status[data-tone] {color:var(--tone-ink);background:var(--tone-bg);border-color:var(--tone-border)}
-  html .sync-status[data-tone] small {color:var(--tone-ink)}
   html :is(.profit-pending,.pending,.cache-status,.editing-banner,.account-pending,.account-dialog .notice) {color:var(--attention-ink);background:var(--attention-bg);border-color:var(--attention-border)}
   html :is(.in,.connected) {color:var(--received-ink)}
   html :is(.out,.error,.danger-action,.bulk-delete-button,.delete-transaction,.disconnect) {color:var(--paid-ink)}

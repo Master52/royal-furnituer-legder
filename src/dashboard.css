@@ -16,6 +16,33 @@
 
 .dashboard-categories{margin:20px 0 26px}.dashboard-category-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.category-card .category-cashflow{flex-basis:100%;font-size:11px;color:#617463}.category-card .category-name{flex:1}.category-card .card-arrow{bottom:18px}[data-theme=dark] .category-card .category-cashflow{color:#b5c5af}@media(max-width:520px){.dashboard-category-heading{align-items:flex-start;flex-direction:column}.dashboard-category-heading small{font-size:11px}.category-card .category-cashflow{font-size:10px}}
 
-.current-balance-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
-@media(max-width:1100px){.current-balance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:420px){.current-balance-grid{grid-template-columns:1fr}}
+.current-balances{container-type:inline-size;padding:14px;border-radius:12px}
+.current-balance-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+@container(min-width:760px){.current-balance-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+
+
+/* Keep toolbar and cards within the dashboard at narrower widths. */
+.dashboard-heading{align-items:flex-start;flex-wrap:wrap}
+.dashboard-heading>div:first-child{flex-shrink:0}
+.dashboard-heading h1{margin-bottom:0}
+.dashboard-heading .dashboard-actions{justify-content:flex-end;min-width:0;flex:1;gap:10px}
+.current-balance-grid .balance-card{text-align:left;min-width:0;container-type:inline-size;padding:12px;border-radius:8px}
+.current-balance-grid .balance-card>span{font-size:12px}
+.current-balance-grid .balance-card h2{font-size:clamp(12px,10cqi,23px);white-space:nowrap;overflow-wrap:normal;letter-spacing:-.5px;margin:6px 0 0;line-height:1.25}
+.current-balance-grid .balance-card>small{display:block;font-size:10px;line-height:1.4;margin-top:6px}
+@media(max-width:1100px){
+ .dashboard-heading{flex-direction:column;gap:14px}
+ .dashboard-heading .dashboard-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%;gap:8px}
+ .dashboard-heading .dashboard-actions>button{min-width:0;white-space:normal}
+ .period-bar{flex-wrap:wrap}
+}
+@media(max-width:900px){
+ .dashboard-heading .dashboard-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .period-bar .date-range{order:3;width:100%}
+ .period-bar .date-range input{flex:1;min-width:0;width:0;max-width:none}
+}
+@media(max-width:520px){
+ .dashboard-heading .dashboard-actions>button{min-height:42px;padding:10px 8px;font-size:11px}
+ .dashboard-heading .dashboard-actions kbd{display:none}
+ .current-balance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

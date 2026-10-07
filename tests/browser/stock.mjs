@@ -90,7 +90,7 @@ try{
  const backgroundPage=await backgroundContext.newPage();backgroundPage.on('pageerror',error=>errors.push(error.message));
  try{
   await backgroundPage.goto(process.env.LEDGER_TEST_URL||'http://127.0.0.1:5175');await backgroundPage.locator('.sidebar').getByRole('button',{name:/Stock/}).click();await backgroundPage.getByRole('heading',{name:'Stock',exact:true}).waitFor();
-  await backgroundPage.getByText('2 stock update(s) saving in background.',{exact:true}).waitFor();
+  await backgroundPage.locator('.sync-status summary').filter({hasText:'Saving 2 changes'}).waitFor();
   await backgroundPage.keyboard.press('Alt+Shift+1');await backgroundPage.getByRole('heading',{name:'Dashboard',exact:true}).waitFor();releaseFirst();
   await backgroundPage.waitForFunction(()=>!localStorage.getItem('rf.stock-pending:https://script.google.com/macros/s/TEST-ONLY/exec'));assert.equal(backgroundSends,2);assert.equal(backgroundBackend.post('listStock',{}).items[0].balance,'8');
  }finally{releaseFirst();await backgroundContext.close();}

@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.24.0';
+const BACKEND_VERSION = '1.25.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -289,14 +289,14 @@ const ACCOUNT_HEADERS = {
   StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt','importMode','invoiceStockRevision','stockEntries','supersedesIds'],
   ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId','saleBillingUnit','purchaseBillingUnit','costBillingUnit'],
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
-  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot','stockRevision'],
+  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot','stockRevision','autoRoundOff','roundOffMinor'],
   InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
   InvoiceMeasurements:['id','invoiceId','itemId','description','lengthMilli','widthMilli','quantityMilli','pieces'],
   InvoiceHistory: ['id','invoiceId','revision','changedAt','editId','snapshot'],
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={StockOperations:['invoiceStockRevision','stockEntries','supersedesIds'],ItemCatalogue:['saleBillingUnit','purchaseBillingUnit','costBillingUnit'],Parties:['partyType'],Invoices:['stockRevision','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={StockOperations:['invoiceStockRevision','stockEntries','supersedesIds'],ItemCatalogue:['saleBillingUnit','purchaseBillingUnit','costBillingUnit'],Parties:['partyType'],Invoices:['autoRoundOff','roundOffMinor','stockRevision','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -405,7 +405,11 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
   accountAmount_(total);
   if(invoiceDiscountMinor>total)throw new Error('Invoice discount exceeds the subtotal.');
   total-=invoiceDiscountMinor;
-  Object.assign(invoice,{discountMode,discountValue,invoiceDiscountMinor,walkIn,paymentId:t.paymentId||''});
+  if(![undefined,null,'',false,true,'false','true'].includes(t.autoRoundOff))throw new Error('Invalid auto round-off option.');
+  const autoRoundOff=t.autoRoundOff===true||t.autoRoundOff==='true',rounded=autoRoundOff?Math.floor((total+50)/100)*100:total,roundOffMinor=rounded-total;
+  if(t.invoiceRoundingSchemaVersion===1&&t.roundOffMinor!==roundOffMinor)throw new Error('Invoice round-off does not match its items and discount.');
+  total=rounded;
+  Object.assign(invoice,{discountMode,discountValue,invoiceDiscountMinor,autoRoundOff,roundOffMinor,walkIn,paymentId:t.paymentId||''});
   if (total<=0) throw new Error('Invoice total must be positive.');
   accountAmount_(total); accountAmount_(cost);
   return {...invoice,totalMinor:total,costTotalMinor:complete?cost:null,itemCount:items.length,items};
@@ -434,7 +438,7 @@ function accountInvoiceRecord_(invoice,allItems,measurementIndex){
   return {...record,detailToken:invoiceDetailToken_(record)};
 }
 
-function invoiceHeaderDefaults_(invoice){return {...invoice,discountMode:invoice.discountMode||'amount',discountValue:Number(invoice.discountValue||0),invoiceDiscountMinor:Number(invoice.invoiceDiscountMinor||0),walkIn:invoice.walkIn===true||invoice.walkIn==='true',paymentId:invoice.paymentId||''};}
+function invoiceHeaderDefaults_(invoice){return {...invoice,autoRoundOff:invoice.autoRoundOff===true||invoice.autoRoundOff==='true',roundOffMinor:Number(invoice.roundOffMinor||0),discountMode:invoice.discountMode||'amount',discountValue:Number(invoice.discountValue||0),invoiceDiscountMinor:Number(invoice.invoiceDiscountMinor||0),walkIn:invoice.walkIn===true||invoice.walkIn==='true',paymentId:invoice.paymentId||''};}
 function visiblePayments_(ss,rows,invoices){
   if(!rows.some(row=>row.invoiceId))return rows;
   const committed=new Map((invoices||accountReadRows_(ss,'Invoices')).map(invoice=>[invoice.id,invoice]));
@@ -603,6 +607,7 @@ function accountAction_(action,t) {
     const normalized=normalizedInvoice_({...t,itemVersion:t._editId,items:t.items.map((item,index)=>({...item,id:t.id+'-'+t._editId+'-'+(index+1),invoiceId:t.id}))});
     if(Boolean(normalized.walkIn)!==invoiceHeaderDefaults_(existing).walkIn||normalized.paymentId!==(existing.paymentId||''))throw new Error('Invoice customer mode and payment link cannot be changed.');
     if(normalized.walkIn&&(normalized.totalMinor!==Number(existing.totalMinor)||normalized.invoiceDate!==existing.invoiceDate))throw new Error('Walk-in invoice amount/date are linked to its payment. Delete and reissue both records to change them. CP and item details can be edited without changing the total.');
+    if(t.invoiceRoundingSchemaVersion!==1&&invoiceHeaderDefaults_(existing).autoRoundOff)throw new Error('Update the app before editing an invoice with auto round-off.');
     if(t.invoiceDiscountSchemaVersion!==1&&Number(existing.invoiceDiscountMinor||0)>0)throw new Error('Update the app before editing an invoice-level discount.');
     const allItems=accountRows_(ss,'InvoiceItems').filter(row=>row.invoiceId===t.id);
     const staged=allItems.filter(row=>row.versionId===t._editId);
@@ -836,7 +841,7 @@ function stockDecimal_(value,signed=false){
 function stockText_(value){const n=BigInt(value),a=n<0?-n:n,rest=a%STOCK_SCALE_;return (n<0?'-':'')+String(a/STOCK_SCALE_)+(rest?'.'+String(rest).padStart(8,'0').replace(/0+$/,''):'');}
 function stockConvert_(quantity,factor){const product=stockDecimal_(quantity,true)*stockDecimal_(factor);if(product%STOCK_SCALE_)throw new Error('Stock conversion exceeds 8 decimal places.');const value=stockText_(product/STOCK_SCALE_);stockDecimal_(value,true);return value;}
 function stockCanonical_(value){if(Array.isArray(value))return value.map(stockCanonical_);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stockCanonical_(value[key])]));return value;}
-function invoiceDetailToken_(invoice){const header=['status','invoiceNumber','invoiceDate','partyId','partyName','partyPhone','partyAddress','type','notes','challanNumber','discountMode','discountValue','invoiceDiscountMinor','totalMinor','costTotalMinor','paymentId','walkIn','itemVersion','updatedAt','stockRevision'].map(key=>[key,String(invoice[key]??'')]);return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify({header,items:invoice.items})).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join('')+':'+Number(invoice.revision||0);}
+function invoiceDetailToken_(invoice){const header=['status','invoiceNumber','invoiceDate','partyId','partyName','partyPhone','partyAddress','type','notes','challanNumber','discountMode','discountValue','invoiceDiscountMinor','autoRoundOff','roundOffMinor','totalMinor','costTotalMinor','paymentId','walkIn','itemVersion','updatedAt','stockRevision'].map(key=>[key,String(invoice[key]??'')]);return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify({header,items:invoice.items})).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join('')+':'+Number(invoice.revision||0);}
 function invoiceStockKey_(invoice){return JSON.stringify({type:invoice.type,items:(invoice.items||[]).map(item=>({description:item.description,quantityMilli:item.quantityMilli,billingUnit:item.billingUnit||'nos',measurementUnit:item.measurementUnit||'',measurementMode:item.measurementMode||'',measurements:(item.measurements||[]).map(row=>({description:row.description||'',lengthMilli:row.lengthMilli||0,widthMilli:row.widthMilli||0,quantityMilli:row.quantityMilli||0,pieces:row.pieces||0}))}))});}
 function stockReviewMatches_(op,invoice){return op.invoiceStockRevision!==''&&op.invoiceStockRevision!=null&&invoice.stockRevision!==''&&invoice.stockRevision!=null?Number(op.invoiceStockRevision)===Number(invoice.stockRevision):Number(op.invoiceRevision)===Number(invoice.revision||0);}
 function stockEntries_(op,movements){return Array.isArray(op.stockEntries)?op.stockEntries:movements.filter(row=>row.operationId===op.id);}

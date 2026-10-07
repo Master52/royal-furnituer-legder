@@ -3,7 +3,7 @@ import {blankMeasurement} from './measurements.js';
 
 export const invoiceDraftKey=endpoint=>`rf.invoiceDraft.${endpoint}`;
 export function hasInvoiceDraft(draft){
-  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.walkIn||draft.paymentWithInvoice||Number(draft.discount||0)!==0||draft.items.some(item=>item.description.trim()||item.itemNote?.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0||Boolean(item.billingUnit&&item.billingUnit!=='nos')||Boolean(item.measurements?.length)));
+  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.walkIn||draft.paymentWithInvoice||draft.autoRoundOff||Number(draft.discount||0)!==0||draft.items.some(item=>item.description.trim()||item.itemNote?.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0||Boolean(item.billingUnit&&item.billingUnit!=='nos')||Boolean(item.measurements?.length)));
 }
 export function readInvoiceDraft(storage,endpoint){
   const key=invoiceDraftKey(endpoint);
@@ -22,6 +22,8 @@ export function readInvoiceDraft(storage,endpoint){
     draft.walkIn=Boolean(saved.walkIn);
     if(saved.paymentWithInvoice!=null&&typeof saved.paymentWithInvoice!=='boolean')throw new Error('Invalid invoice payment option');
     draft.paymentWithInvoice=Boolean(saved.paymentWithInvoice);
+    if(saved.autoRoundOff!=null&&typeof saved.autoRoundOff!=='boolean')throw new Error('Invalid round-off option');
+    draft.autoRoundOff=Boolean(saved.autoRoundOff);
     if(!['amount','percent'].includes(draft.discountMode))throw new Error('Invalid discount mode');
     if(saved.checkout){for(const field of Object.keys(draft.checkout)){if(saved.checkout[field]!=null&&typeof saved.checkout[field]!=='string')throw new Error('Invalid checkout field');draft.checkout[field]=saved.checkout[field]||'';}}
     if(!['sale','purchase'].includes(draft.type))throw new Error('Invalid invoice type');
