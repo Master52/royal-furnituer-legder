@@ -1,5 +1,7 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
+import DocumentShare from './DocumentShare.jsx';
+import {paymentMessage,receiptImageDocument} from './documentLayout.js';
 import RecordMenu from './RecordMenu.jsx';
 import AccountDialog from './AccountDialog.jsx';
 import { paymentMethodText, money, SHOP_TIMEZONE, transactionIntegrityIssue } from './ledger.js';
@@ -36,8 +38,11 @@ function TransactionContent({transaction,queued,duplicate=false}){
   </>;
 }
 
-export default function TransactionDetails({transaction,queued,duplicate=false,preferences,initialAction,onPreparePrint,onEdit,onDelete,onClose}){
+export default function TransactionDetails({partyBalance=null,sharingConfirmed=true,transaction,queued,duplicate=false,preferences,initialAction,onPreparePrint,onEdit,onDelete,onClose}){
   const [preparing,setPreparing]=useState(false),[printing,setPrinting]=useState(false),[snapshot,setSnapshot]=useState(null),[error,setError]=useState('');
+  const [sharing,setSharing]=useState(initialAction==='share');
+  const shareMessage=useMemo(()=>paymentMessage(transaction,preferences,partyBalance),[transaction,preferences,partyBalance]);
+  const imageDocument=useMemo(()=>receiptImageDocument(transaction.direction==='in'?'Payment received':'Payment made',transaction,preferences,shareMessage),[transaction,preferences,shareMessage]);
   const requested=useRef(false);
   async function print(){
     if(preparing||printing||queued||duplicate)return;setPreparing(true);setError('');
@@ -47,7 +52,7 @@ export default function TransactionDetails({transaction,queued,duplicate=false,p
   useEffect(()=>{if(!printing)return;document.body.dataset.accountPrint='payment';const timer=setTimeout(()=>window.print(),0);const done=()=>{delete document.body.dataset.accountPrint;setPrinting(false);};window.addEventListener('afterprint',done);return()=>{clearTimeout(timer);window.removeEventListener('afterprint',done);if(document.body.dataset.accountPrint==='payment')delete document.body.dataset.accountPrint;};},[printing]);
   return <><AccountDialog className="transaction-detail-dialog" title="Transaction details" busy={preparing||printing} onClose={onClose}>
     {error&&<p className="error" role="alert">{error}</p>}
-    <div className="invoice-popup-actions"><button data-hotkey="alt+e" aria-keyshortcuts="Alt+E" data-hotkey-label="Edit payment" type="button" className="outline" disabled={!!queued||preparing||printing} onClick={onEdit}>Edit payment</button><RecordMenu label={transaction.party||transaction.category} actions={[{label:'Print payment',shortcut:'alt+p',disabled:!!queued||duplicate||preparing||printing,onClick:print},{label:'Delete payment',disabled:!!queued||preparing||printing,onClick:onDelete}]}/></div>
-    <TransactionContent transaction={transaction} queued={queued} duplicate={duplicate}/>
+    <div className="invoice-popup-actions"><button data-hotkey="alt+e" aria-keyshortcuts="Alt+E" data-hotkey-label="Edit payment" type="button" className="outline" disabled={!!queued||preparing||printing} onClick={onEdit}>Edit payment</button><button type="button" className="outline" data-hotkey="alt+s" disabled={!!queued||duplicate||!sharingConfirmed||!!transactionIntegrityIssue(transaction)} onClick={()=>setSharing(value=>!value)}>Share transaction</button><RecordMenu label={transaction.party||transaction.category} actions={[{label:'Print payment',shortcut:'alt+p',disabled:!!queued||duplicate||preparing||printing,onClick:print},{label:'Delete payment',disabled:!!queued||preparing||printing,onClick:onDelete}]}/></div>
+    {sharing&&<DocumentShare title="Party transaction" message={shareMessage} imageDocument={imageDocument} disabled={!sharingConfirmed||!!queued||duplicate}/>}<TransactionContent transaction={transaction} queued={queued} duplicate={duplicate}/>
   </AccountDialog>{printing&&snapshot&&createPortal(<div className="account-print-output"><section className="invoice-document"><header className="invoice-document-header"><div><h1>{preferences.shopName}</h1>{preferences.printContact&&<p>{preferences.address}<br/>{preferences.phone}</p>}</div><h2>Payment statement</h2></header><TransactionContent transaction={snapshot}/></section></div>,document.body)}</>;
 }

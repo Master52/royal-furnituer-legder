@@ -58,6 +58,8 @@ export default function useAccounts(endpoint, enabled) {
         const savedAt=new Date().toISOString();
         // Summary reads invalidate old line items, including direct Sheet edits
         // that retain the same revision. Open documents fetch details on demand.
+        const oldById=new Map((snapshotRef.current?.data.invoices||[]).map(row=>[row.id,row]));
+        result.invoices=result.invoices.map(row=>{const old=oldById.get(row.id);return old?.detailToken&&row.detailToken===old.detailToken&&Number(row.revision||0)===Number(old.revision||0)&&row.status===old.status&&Array.isArray(old.items)?{...old,...row,items:old.items,_summary:false}:row;});
         const next={endpoint,data:result,savedAt,cached:false};
         lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);setReadError('');
         saveAccountCache(endpoint,result,savedAt).catch(()=>{});
@@ -87,7 +89,7 @@ export default function useAccounts(endpoint, enabled) {
     reload();
     return()=>{generation.current++;};
   },[endpoint,enabled,reload]);
-  const detailFlights=useRef(new Map());
+  const detailFlights=useRef(new Map()),detailById=useRef(new Map());
   async function loadInvoiceDetails(ids,{fresh=false}={}){
     const generationAtStart=generation.current,target=endpoint;
     const current=snapshotRef.current;
@@ -96,9 +98,12 @@ export default function useAccounts(endpoint, enabled) {
     const version=String(current?.data.backendVersion||'').split('.').map(Number);
     const supportsDetails=version[0]>1||version[0]===1&&version[1]>=13;
     if(!supportsDetails){const records=ids.map(id=>currentById.get(id));if(records.every(record=>Array.isArray(record?.items)))return records;throw new Error('Refresh your Sheet connection to load invoice details.');}
-    ids=[...new Set(ids)];
+    ids=[...new Set(ids)];if(!ids.length)return [];
     const missing=ids.filter(id=>fresh||!Array.isArray(currentById.get(id)?.items));
     if(!missing.length)return ids.map(id=>currentById.get(id));
+    const detailKey=id=>generationAtStart+':'+target+':'+id+':'+currentById.get(id)?.detailToken;
+    const waiting=[...new Set(missing.map(id=>detailById.current.get(detailKey(id))).filter(Boolean))];
+    if(waiting.length){await Promise.all(waiting);return loadInvoiceDetails(ids,{fresh});}
     const key=generationAtStart+':'+target+':'+[...new Set(missing)].sort().join('|');
     const previous=detailFlights.current.get(key);
     if(previous){
@@ -115,14 +120,16 @@ export default function useAccounts(endpoint, enabled) {
       const latest=snapshotRef.current;
       const byId=new Map(records.map(record=>[record.id,record]));
       const latestById=new Map(latest.data.invoices.map(record=>[record.id,record]));
-      if(records.some(record=>{const base=latestById.get(record.id);return !base||base!==currentById.get(record.id)||Number(base.revision||0)!==Number(record.revision||0)||base.status==='deleted'||lastAppliedRead.current!==appliedBeforeDetails&&base.status!==record.status;}))throw new Error('Invoice changed while loading. Refresh and open it again.');
-      const next={...latest,data:{...latest.data,invoices:latest.data.invoices.map(base=>byId.has(base.id)?{...byId.get(base.id),_summary:false}:base)}};
+      if(records.some(record=>{const base=latestById.get(record.id);return !base||base!==currentById.get(record.id)&&(!base.detailToken||base.detailToken!==currentById.get(record.id)?.detailToken)||Number(base.revision||0)!==Number(record.revision||0)||base.status==='deleted'||lastAppliedRead.current!==appliedBeforeDetails&&base.status!==record.status;}))throw new Error('Invoice changed while loading. Refresh and open it again.');
+      const next={...latest,data:{...latest.data,invoices:latest.data.invoices.map(base=>byId.has(base.id)?{...base,...byId.get(base.id),_summary:false}:base)}};
       lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(target,next.data,next.savedAt).catch(()=>{});
       const nextById=new Map(next.data.invoices.map(record=>[record.id,record]));
       return ids.map(id=>nextById.get(id));
-    })();detailFlights.current.set(key,promise);
-    try{return await promise;}finally{detailFlights.current.delete(key);}
+    })();detailFlights.current.set(key,promise);for(const id of missing)detailById.current.set(detailKey(id),promise);
+    try{return await promise;}finally{detailFlights.current.delete(key);for(const id of missing)if(detailById.current.get(detailKey(id))===promise)detailById.current.delete(detailKey(id));}
   }
+  const preloadKey=data.invoices.slice(-12).map(row=>row.id+':'+row.detailToken).join('|');
+  useEffect(()=>{if(!loaded||cached||!preloadKey)return;const timer=setTimeout(()=>{const recent=snapshotRef.current?.data.invoices.slice().sort((a,b)=>String(b.createdAt||b.invoiceDate).localeCompare(String(a.createdAt||a.invoiceDate))).slice(0,12);if(recent?.length)loadInvoiceDetails(recent.filter(row=>!Array.isArray(row.items)).map(row=>row.id)).catch(()=>{});},250);return()=>clearTimeout(timer);},[preloadKey,loaded,cached,endpoint]);
   const refreshIfStale=useCallback(()=>{
     const current=snapshotRef.current;
     if(!current || current.endpoint!==endpoint || current.cached || Date.now()-Date.parse(current.savedAt)>60000) return reload();

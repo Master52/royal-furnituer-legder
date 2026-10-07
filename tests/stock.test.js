@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {accountBackend} from './helpers/accountBackend.js';
 import {stockDecimal,stockText,convertStock,parseStockCsv,stockInvoiceStatus} from '../src/stock.js';
-import {makeParty,makeInvoice} from '../src/accounts.js';
+import {makeParty,makeInvoice,invoiceDraftFromRecord} from '../src/accounts.js';
 const itemId='stock-item-0000000000001',openingId='opening-stock-00000000001',partyId='stock-party-000000000001',invoiceId='stock-invoice-0000000001';
 const item=(extra={})=>({id:itemId,sourceId:'mybillbook-model-1',name:'SCREW',code:'MODEL-1',baseUnit:'PCS',secondaryUnit:'BOX',conversion:'1000',quantity:'6.988',importUnit:'BOX',saleRateUnit:'PCS',purchaseRateUnit:'BOX',saleRateMinor:100,purchaseRateMinor:80,lowStock:'100',...extra});
 function opening(b,items=[item()]){const result=b.post('importStock',{id:openingId,openingDate:'2026-10-01',items});assert.equal(result.ok,true,result.error);return result.stock;}
@@ -194,4 +194,44 @@ test('multiple queued item edits retain each preview and chain revisions for rep
  assert.equal(read(b).items[0].revision,2);assert.equal(read(b).items[0].balance,'6988');assert.equal(read(b).items[1].balance,'6988');assert.equal(read(b).movements.length,data.movements.length);
  // Rejected earlier edits must not preview their dependent revisions as confirmed.
  const rejected=applyPendingStock(data,[{...queue[0],rejected:true},...queue.slice(1)]);assert.equal(rejected.items[0].saleRateMinor,data.items[0].saleRateMinor);
+});
+
+function editStockInvoice(b,record,change,token){const draft=invoiceDraftFromRecord(record);change(draft);const payload={...makeInvoice(draft,record.id),invoiceNumber:record.invoiceNumber,_expectedRevision:Number(record.revision||0),_editId:token};const result=b.post('updateInvoice',payload);assert.equal(result.ok,true,result.error);return result.record;}
+function stockAdjustment(record,stock,quantity,id){return {id,stockMovementSchemaVersion:1,invoiceId:record.id,invoiceRevision:record.revision,invoiceType:record.type,invoiceStockRevision:record.stockRevision,movementDate:'2026-10-06',reason:'Revised usage',supersedesIds:stock.operations.filter(op=>op.kind==='review'&&op.invoiceId===record.id&&!op.reversed&&!op.superseded).map(op=>op.id),reviewItemIds:record.items.map(row=>row.id),movements:quantity===null?[]:[{stockItemId:itemId,expectedRevision:stock.items[0].revision,quantity,unit:'PCS'}]};}
+test('invoice stock adjustments save only differences and preserve original usage across repeated edits',async()=>{
+ const {applyPendingStock}=await import('../src/stock.js'),b=accountBackend();opening(b);let record=invoice(b);assert.equal(b.post('reviewInvoiceStock',review(record)).ok,true);
+ record=editStockInvoice(b,record,draft=>draft.items.push({...draft.items[0],description:'EXTRA MATERIAL'}),'stock-invoice-edit-add001');assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Needs review');
+ let before=read(b),payload=stockAdjustment(record,before,'2500','stock-difference-add00001'),projected=applyPendingStock(before,[{action:'adjustInvoiceStock',payload}]);assert.equal(projected.items[0].balance,'4488');assert.equal(before.operations[1].superseded,false);
+ b.failNext('StockOperations');assert.equal(b.post('adjustInvoiceStock',payload).ok,false);assert.equal(read(b).items[0].balance,'4988');assert.equal(b.post('adjustInvoiceStock',payload).ok,true);assert.equal(b.post('adjustInvoiceStock',payload).ok,true);let data=read(b);assert.equal(data.items[0].balance,'4488');assert.equal(data.movements.at(-1).baseQuantity,'-500');assert.equal(stockInvoiceStatus(record,data.reviews,data.operations),'Reviewed');assert.equal(b.post('adjustInvoiceStock',{...payload,id:'stock-difference-stale001'}).ok,false);
+ record=editStockInvoice(b,record,draft=>draft.items.pop(),'stock-invoice-edit-drop01');payload=stockAdjustment(record,read(b),'1000','stock-difference-remove01');assert.equal(b.post('adjustInvoiceStock',payload).ok,true);data=read(b);assert.equal(data.items[0].balance,'5988');assert.equal(data.movements.at(-1).baseQuantity,'1500');assert.equal(b.post('reverseStock',{id:'stock-difference-reverse1',reversesId:payload.id,movementDate:'2026-10-06',reason:'Undo complete revised usage'}).ok,true);assert.equal(read(b).items[0].balance,'6988');assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Pending');
+});
+test('stock unchanged confirms a revised invoice without new movements; removing all usage restores stock',()=>{
+ const b=accountBackend();opening(b);let record=invoice(b);b.post('reviewInvoiceStock',review(record));record=editStockInvoice(b,record,draft=>draft.items[0].description='REVISED WINDOW','stock-unchanged-edit001');
+ let before=read(b),payload=stockAdjustment(record,before,'2000','stock-unchanged-confirm1');assert.equal(b.post('adjustInvoiceStock',payload).ok,true);assert.equal(read(b).movements.length,before.movements.length);assert.equal(read(b).items[0].balance,'4988');assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Reviewed');
+ payload=stockAdjustment(record,read(b),null,'stock-remove-all-usage01');assert.equal(b.post('adjustInvoiceStock',payload).ok,true);assert.equal(read(b).items[0].balance,'6988');
+});
+test('price, CP and invoice-note edits keep physical stock reviewed; quantities trigger review',()=>{
+ const b=accountBackend();opening(b);let record=invoice(b);b.post('reviewInvoiceStock',review(record));const before=read(b);
+ record=editStockInvoice(b,record,draft=>{draft.items[0].rate='120';draft.items[0].cost='60';draft.notes='Updated note';},'stock-price-only-edit001');assert.equal(Number(record.stockRevision),0);assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Reviewed');assert.equal(read(b).items[0].balance,before.items[0].balance);assert.equal(b.post('reviewInvoiceStock',{...review(record),id:'stock-price-duplicate001',invoiceRevision:record.revision}).ok,false);
+ record=editStockInvoice(b,record,draft=>draft.items[0].quantity='3','stock-quantity-edit00001');assert.equal(Number(record.stockRevision),1);assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Needs review');
+});
+test('purchase stock adjustment removes excess receipt without changing payments or invoices',()=>{
+ const b=accountBackend();opening(b);let record=invoice(b,'purchase');b.post('reviewInvoiceStock',review(record));record=editStockInvoice(b,record,draft=>draft.items.pop(),'purchase-stock-edit0001');const payload=stockAdjustment(record,read(b),'1500','purchase-stock-diff00001');assert.equal(b.post('adjustInvoiceStock',payload).ok,true);assert.equal(read(b).items[0].balance,'8488');assert.equal(read(b).movements.at(-1).baseQuantity,'-500');assert.equal(b.post('listAccounts',{}).transactions.length,0);
+});
+
+test('saved stock queues recover before the first stock snapshot without crashing',async()=>{
+ const {applyPendingStock}=await import('../src/stock.js');const empty={items:[],movements:[],reviews:[],operations:[],openingDate:''};
+ for(const action of ['recordStock','reviewInvoiceStock','adjustInvoiceStock'])assert.doesNotThrow(()=>applyPendingStock(empty,[{action,payload:{id:'stock-startup-recovery01',reviewMode:'invoice',invoiceId,invoiceType:'sale',invoiceRevision:0,reviewItemIds:['line'],movements:[{stockItemId:itemId,quantity:'1',unit:'BOX'}],supersedesIds:[]}}]));
+});
+test('unchanged stock review handles archived materials without converting or moving their quantity',()=>{
+ const b=accountBackend();opening(b);let record=invoice(b);b.post('reviewInvoiceStock',review(record));const current=read(b).items[0];assert.equal(b.post('deleteStockItems',{id:'stock-archive-old-usage01',targets:[{id:itemId,revision:current.revision}]}).ok,true);
+ record=editStockInvoice(b,record,draft=>draft.items[0].description='REVISED ORDER','stock-archive-note-edit01');const before=read(b),payload={...stockAdjustment(record,before,null,'stock-archive-unchanged01'),stockUnchanged:true};assert.equal(b.post('adjustInvoiceStock',payload).ok,true);assert.equal(read(b).items[0].balance,before.items[0].balance);assert.equal(read(b).movements.length,before.movements.length);assert.equal(stockInvoiceStatus(record,read(b).reviews,read(b).operations),'Reviewed');
+});
+
+test('stock activity retains sales through price-only invoice edits and uses full adjusted usage without superseded double counting',async()=>{
+ const {stockActivity}=await import('../src/stock.js');
+ const items=[{id:'material',balance:'12'}],invoices=[{id:'sale',type:'sale',status:'issued',revision:4,stockRevision:1}];
+ const operations=[{id:'old',kind:'review',invoiceId:'sale',invoiceRevision:0,invoiceStockRevision:0,superseded:true},{id:'latest',kind:'review',invoiceId:'sale',invoiceRevision:3,invoiceStockRevision:1,createdAt:'2026-10-07T12:00:00Z',stockEntries:[{stockItemId:'material',baseQuantity:'-8',movementDate:'2026-10-06'}]}];
+ const movements=[{stockItemId:'material',operationId:'old',baseQuantity:'-10',movementDate:'2026-10-05'},{stockItemId:'material',operationId:'latest',baseQuantity:'2',movementDate:'2026-10-06'}];
+ const result=stockActivity(items,movements,operations,invoices,'2026-10-07');assert.equal(result.counts.get('material').size,1);
 });

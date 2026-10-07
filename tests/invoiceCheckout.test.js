@@ -81,7 +81,7 @@ test('deleted payment is not described as paid, and original invoice retry canno
 test('messages use overall party balance, hide private figures, sanitize markup and format recipient numbers',()=>{
  const invoice={...makeInvoice({...draft(),walkIn:false,partyId},id),partyName:'Ali*\nFake',invoiceNumber:'RF-S-000001',status:'issued'};
  const msg=invoiceMessage(invoice,{shopName:'Royal'},{partyBalance:250000,checkedAt:'2026-10-02T10:00:00Z'});
- assert.match(msg,/Current party balance: ₹2,500.00 to receive/);assert.match(msg,/overall account balance, including other invoices/);assert.doesNotMatch(msg,/Pending:|CP|profit|600|\nFake/);
+ assert.match(msg,/Current party balance: ₹2,500.00 to receive/);assert.ok(msg.split('\n').length<=12);assert.doesNotMatch(msg,/Pending:|CP|profit|600|\nFake/);
  assert.equal(whatsappRecipient('9876543210'),'919876543210');assert.equal(whatsappRecipient('+44 7700 900123'),'447700900123');assert.equal(whatsappRecipient(''),'');assert.throws(()=>whatsappRecipient('abc123'));
 });
 test('checkout drafts preserve fields, but restored rejected invoices get fresh payment identities',()=>{
@@ -105,7 +105,7 @@ function partyCheckout(type='sale',amount='300'){
 test('party advance reduces the overall balance without changing revenue or profit',()=>{
  const {b,p}=partyCheckout();const result=b.post('createInvoice',p);assert.equal(result.ok,true,result.error);assert.equal(result.transaction.partyId,partyId);assert.equal(result.transaction.direction,'in');
  const data=snapshot(b);assert.equal(accountBalances(data.parties,data.invoices,data.transactions)[0].balance,75000);assert.deepEqual(paymentMethodBalance(data.transactions),{Cash:35000,Online:-5000});assert.equal(invoiceSummary(data.invoices,'2026-10-01','2026-10-31').grossProfit,35000);
- const message=invoiceMessage(data.invoices[0],{shopName:'Royal'},{transactions:data.transactions,partyBalance:75000});assert.match(message,/Payment recorded with invoice: ₹300.00 · Cash/);assert.match(message,/Current party balance: ₹750.00 to receive/);assert.doesNotMatch(message,/Pending:/);
+ const message=invoiceMessage(data.invoices[0],{shopName:'Royal'},{transactions:data.transactions,partyBalance:75000});assert.doesNotMatch(message,/Payment recorded with invoice/);assert.match(message,/Current party balance: ₹750.00 to receive/);assert.doesNotMatch(message,/Pending:/);
 });
 test('purchase invoice checkout records payment out and reduces what we owe',()=>{
  const {b,p}=partyCheckout('purchase');const result=b.post('createInvoice',p);assert.equal(result.ok,true,result.error);assert.equal(result.transaction.category,'Purchase');assert.equal(result.transaction.direction,'out');assert.equal(result.transaction.cashReceivedMinor,'');

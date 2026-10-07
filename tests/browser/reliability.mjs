@@ -45,8 +45,8 @@ try{
   await page.goto(appUrl);
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('rf.outbox'))[0]?._errorCode==='UNAUTHORIZED');
   assert.equal(backend.tabs.size,0);
-  await page.locator('.sidebar').getByRole('button',{name:/Settings/}).click();
-  await page.getByRole('button',{name:'Google Sheets setup'}).click();
+  await page.locator('.settings-dialog[open]').waitFor();
+  await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Access token');
   const settings=page.locator('.settings-dialog');
   await settings.getByLabel('Access token',{exact:true}).fill('incorrect-ledger-token-00000000000001');
   await settings.getByRole('button',{name:'Verify & save access token'}).click();
@@ -57,7 +57,7 @@ try{
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('rf.outbox')).length===0);
   assert.equal(backend.post('list').transactions.length,1);
   assert.ok(!JSON.stringify(await page.evaluate(()=>({...localStorage}))).includes(TEST_ACCESS_TOKEN));
-  await settings.getByRole('button',{name:'Close dialog'}).click();
+  await settings.waitFor({state:'hidden'});
   await context.addInitScript(({endpoint,token})=>sessionStorage.setItem(`rf.access-token:${endpoint}`,token),{endpoint,token:TEST_ACCESS_TOKEN});
   const other=await context.newPage();other.setDefaultTimeout(10000);other.on('pageerror',error=>errors.push(error.message));other.on('dialog',dialog=>dialog.accept());
   await other.goto(appUrl);

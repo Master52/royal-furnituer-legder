@@ -76,3 +76,7 @@ test('catalogue retains separate purchase and sale price units and does not rewr
  assert.equal(purchaseItem.billingUnit,'nos');assert.equal(purchaseItem.rate,'20');assert.equal(purchaseItem.cost,'');
  assert.equal(data.invoices.find(row=>row.id===sale.id).totalMinor,10000);assert.equal(data.invoices.find(row=>row.id===purchase.id).totalMinor,2000);
 });
+
+test('invoice detail tokens detect direct Sheet changes to lines and document headers',()=>{
+ const b=accountBackend();b.post('createInvoice',checkout());let first=b.post('listAccounts',{summary:true}).invoices[0].detailToken;assert.equal(typeof first,'string');const tab=b.tabs.get('Invoices');tab.data[1][tab.data[0].indexOf('challanNumber')]='UPDATED CHALLAN';const second=b.post('listAccounts',{summary:true}).invoices[0].detailToken;assert.notEqual(second,first);assert.equal(b.post('getInvoices',{ids:[id]}).invoices[0].detailToken,second);
+});

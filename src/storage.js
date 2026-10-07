@@ -95,3 +95,11 @@ export async function saveAccountCache(endpoint, data, savedAt) {
   if (!endpoint) return;
   await indexedDbRequest('readwrite', store => store.put({ data, savedAt }, ACCOUNT_CACHE_PREFIX + endpoint));
 }
+
+const STOCK_CACHE_PREFIX='rf.stock-cache:';
+export async function loadStockCache(endpoint){
+ try{const value=await indexedDbRequest('readonly',store=>store.get(STOCK_CACHE_PREFIX+endpoint));return value&&['items','movements','reviews','operations'].every(key=>Array.isArray(value.data?.[key]))?value:null;}catch{return null;}
+}
+export async function saveStockCache(endpoint,data,savedAt=new Date().toISOString()){
+ if(!endpoint)return;await indexedDbRequest('readwrite',store=>store.put({data,savedAt},STOCK_CACHE_PREFIX+endpoint));
+}

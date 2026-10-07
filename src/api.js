@@ -4,6 +4,7 @@ export function validateEndpoint(value) {
   return url.href;
 }
 export const MAX_REQUEST_CHARS = 100000;
+export const ACCESS_REQUIRED_EVENT='rf:access-required';
 export const ACCESS_CHANGED_EVENT = 'rf:access-changed';
 export const accessTokenKey = endpoint => `rf.access-token:${validateEndpoint(endpoint)}`;
 export function readAccessToken(endpoint) {
@@ -33,7 +34,8 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
   return async function request(endpoint, transaction, action = 'create', options = {}) {
     validateEndpoint(endpoint);
     // Serialize once: an ambiguous upload must retry the same ID and edit token.
-    const body = serializeRequest(endpoint, transaction, action, options.accessToken ?? readAccessToken(endpoint));
+    let requestToken=options.accessToken??readAccessToken(endpoint);
+    let body = serializeRequest(endpoint, transaction, action, requestToken);
     for (let attempt = 0; ; attempt++) {
       try {
         const fetchOptions = {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body, redirect:'follow', cache:'no-store', credentials:'omit', signal:timeoutSignal(REQUEST_TIMEOUT_MS)};
@@ -63,6 +65,7 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
         return result;
       } catch (cause) {
         let error = cause;
+        if(cause.code==='UNAUTHORIZED'&&!options.accessToken){const current=readAccessToken(endpoint);if(current&&current!==requestToken&&attempt===0){requestToken=current;body=serializeRequest(endpoint,transaction,action,current);continue;}if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent(ACCESS_REQUIRED_EVENT,{detail:{endpoint}}));}
         if (['TimeoutError','AbortError'].includes(cause.name)) error = connectionError('Google Sheets took too long to respond. Your saved changes remain on this device; retry to confirm them.', true);
         else if (cause instanceof TypeError) error = connectionError('Connection to Google Sheets was interrupted. Your saved changes remain on this device. Check your connection or deployment access.', true);
         if (attempt >= 1 || !error.retryable || !safeToRetry(transaction, action) || globalThis.navigator?.onLine === false) throw error;

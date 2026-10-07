@@ -49,13 +49,18 @@ export function parseStockCsv(text){
   if(!result.length||result.length>500)throw new Error('Import between 1 and 500 items at a time.');
   if(new Set(result.map(r=>r.sourceId)).size!==result.length)throw new Error('CSV contains duplicate Item IDs.');return result.map(row=>applyConfirmedStockUnits({...row,exportSnapshot:{name:row.name,code:row.code,quantity:row.quantity,lowStock:row.lowStock,salePrice:row.salePrice,purchasePrice:row.purchasePrice}}));
 }
-export function stockInvoiceStatus(invoice,reviews,operations){
-  const rows=reviews.filter(r=>r.invoiceId===invoice.id),affected=operations.filter(op=>op.invoiceId===invoice.id&&op.kind==='review'&&!op.reversed);
-  if(affected.some(op=>Number(op.invoiceRevision)!==Number(invoice.revision||0))||affected.length&&invoice.status!=='issued')return 'Needs review';
-  const current=rows.filter(r=>Number(r.invoiceRevision)===Number(invoice.revision||0));
-  return current.length>=Number(invoice.itemCount)&&current.length?'Reviewed':current.length?'Partially updated':'Pending';
+export function stockReviewMatches(op,invoice){return op.invoiceStockRevision!==''&&op.invoiceStockRevision!=null&&invoice.stockRevision!==''&&invoice.stockRevision!=null?Number(op.invoiceStockRevision)===Number(invoice.stockRevision):Number(op.invoiceRevision||0)===Number(invoice.revision||0);}
+export function invoiceStockOperations(invoice,operations){return operations.filter(op=>op.invoiceId===invoice.id&&op.kind==='review'&&!op.reversed&&!op.superseded);}
+export function invoiceStockEntries(invoice,stock){
+ const totals=new Map();for(const op of invoiceStockOperations(invoice,stock.operations))for(const row of Array.isArray(op.stockEntries)?op.stockEntries:stock.movements.filter(row=>row.operationId===op.id))totals.set(row.stockItemId,(totals.get(row.stockItemId)||0n)+stockDecimal(row.baseQuantity,{signed:true}));
+ return [...totals].filter(([,amount])=>amount!==0n).map(([stockItemId,amount])=>{const item=[...stock.items,...(stock.archivedItems||[])].find(item=>item.id===stockItemId);return {stockItemId,quantity:stockText(amount<0n?-amount:amount),unit:item?.baseUnit,baseQuantity:stockText(amount)};});
 }
-
+export function stockInvoiceStatus(invoice,reviews,operations){
+ const affected=invoiceStockOperations(invoice,operations);
+ if(affected.some(op=>!stockReviewMatches(op,invoice))||affected.length&&invoice.status!=='issued')return 'Needs review';
+ const ids=new Set(affected.map(op=>op.id));const current=reviews.filter(row=>row.invoiceId===invoice.id&&(ids.has(row.operationId)||!affected.length&&Number(row.invoiceRevision)===Number(invoice.revision||0)));
+ return current.length>=Number(invoice.itemCount)&&current.length?'Reviewed':current.length?'Partially updated':'Pending';
+}
 export function stockPrice(value){const text=String(value||'0').trim();if(!/^\d+(\.\d{1,2})?$/.test(text))throw new Error('Prices must have at most two decimal places.');const [whole,fraction='']=text.split('.');const result=Number(BigInt(whole)*100n+BigInt(fraction.padEnd(2,'0')));if(!Number.isSafeInteger(result)||result>100000000000)throw new Error('Invalid stock price.');return result;}
 export function exportedStockRow(row){
   const raw=row.exportSnapshot||row;
@@ -72,16 +77,18 @@ export function stockImportItems(rows,asExported=false){return rows.filter(row=>
 
 export function stockActivity(items,movements,operations,invoices,today){
  const cutoff=new Date(`${today}T00:00:00Z`);cutoff.setUTCDate(cutoff.getUTCDate()-29);const since=cutoff.toISOString().slice(0,10);
- const sales=new Map(invoices.filter(invoice=>invoice.type==='sale'&&(!invoice.status||invoice.status==='issued')).map(invoice=>[invoice.id,Number(invoice.revision||0)]));
- const active=new Set(operations.filter(op=>op.kind==='review'&&!op.reversed&&sales.has(op.invoiceId)&&Number(op.invoiceRevision||0)===sales.get(op.invoiceId)).map(op=>op.id));
+ const sales=new Map(invoices.filter(invoice=>invoice.type==='sale'&&(!invoice.status||invoice.status==='issued')).map(invoice=>[invoice.id,invoice]));
+ const activeOperations=operations.filter(op=>op.kind==='review'&&!op.reversed&&!op.superseded&&sales.has(op.invoiceId)&&stockReviewMatches(op,sales.get(op.invoiceId)));
+ const active=new Set(activeOperations.map(op=>op.id));
+ const effectiveMovements=activeOperations.flatMap(op=>Array.isArray(op.stockEntries)?op.stockEntries.map(row=>({...row,operationId:op.id,movementDate:row.movementDate||op.movementDate||String(op.createdAt||'').slice(0,10)})):movements.filter(row=>row.operationId===op.id));
  const counts=new Map();
- for(const row of movements){if(!active.has(row.operationId)||row.movementDate<since||row.movementDate>today||stockDecimal(row.baseQuantity,{signed:true})>=0n)continue;const ids=counts.get(row.stockItemId)||new Set();ids.add(row.operationId);counts.set(row.stockItemId,ids);}
+ for(const row of effectiveMovements){if(!active.has(row.operationId)||row.movementDate<since||row.movementDate>today||stockDecimal(row.baseQuantity,{signed:true})>=0n)continue;const ids=counts.get(row.stockItemId)||new Set();ids.add(row.operationId);counts.set(row.stockItemId,ids);}
  const fast=new Set(),slow=new Set();for(const item of items){const count=counts.get(item.id)?.size||0;if(count>=3)fast.add(item.id);else if(stockDecimal(item.balance,{signed:true})>0n)slow.add(item.id);}
  return {fast,slow,counts,since};
 }
 
 export function applyPendingStock(data,queue){
- const items=data.items.map(row=>({...row})),byId=new Map(items.map(row=>[row.id,row])),operations=[...data.operations],movements=[...data.movements],reviews=[...data.reviews],committed=new Set(operations.map(row=>row.id));
+ const items=data.items.map(row=>({...row})),byId=new Map(items.map(row=>[row.id,row])),operations=data.operations.map(op=>({...op})),movements=[...data.movements],reviews=[...data.reviews],committed=new Set(operations.map(row=>row.id));
  for(const operation of queue){if(operation.invalid||operation.rejected)break;const p=operation.payload;if(committed.has(p.id))continue;
   if(operation.action==='updateStockItem'){
    const item=byId.get(p.item?.id);
@@ -93,8 +100,18 @@ export function applyPendingStock(data,queue){
    item.revision=p._expectedRevision+1;item.updatedAt=createdAt;item._pending=true;
    operations.push({id:p.id,kind:'item-edit',createdAt,_pending:true});continue;
   }
+  if(operation.action==='adjustInvoiceStock'){
+   const previous=invoiceStockEntries({id:p.invoiceId}, {...data,items,operations,movements,reviews}),before=new Map(previous.map(row=>[row.stockItemId,stockDecimal(row.baseQuantity,{signed:true})])),after=new Map(),createdAt=operation.queuedAt||new Date().toISOString();
+   const desired=p.stockUnchanged?previous.map(row=>{after.set(row.stockItemId,stockDecimal(row.baseQuantity,{signed:true}));return row;}):p.movements.filter(row=>byId.has(row.stockItemId)).map(row=>{const item=byId.get(row.stockItemId);const value=stockDecimal(convertStock(row.quantity,row.unit===item.baseUnit?'1':item.conversion),{signed:true})*(p.invoiceType==='purchase'?1n:-1n);after.set(row.stockItemId,(after.get(row.stockItemId)||0n)+value);return {...row,baseQuantity:stockText(value)};});
+   for(const id of new Set([...before.keys(),...after.keys()])){const delta=(after.get(id)||0n)-(before.get(id)||0n),item=byId.get(id);if(!delta||!item)continue;item.balance=stockText(stockDecimal(item.balance,{signed:true})+delta);movements.push({id:p.id+'-pending-'+movements.length,operationId:p.id,stockItemId:id,movementDate:p.movementDate,baseQuantity:stockText(delta),quantity:stockText(delta),unit:item.baseUnit,conversion:'1',invoiceId:p.invoiceId,reason:p.reason,createdAt,_pending:true});}
+   for(const op of operations)if((p.supersedesIds||[]).includes(op.id))op.superseded=true;
+   for(let index=reviews.length-1;index>=0;index--)if((p.supersedesIds||[]).includes(reviews[index].operationId))reviews.splice(index,1);
+   operations.push({id:p.id,kind:'review',invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceStockRevision:p.invoiceStockRevision,stockEntries:desired,supersedesIds:p.supersedesIds,createdAt,_pending:true});
+   for(const id of p.reviewItemIds||[])reviews.push({id:p.id+'-pending-'+id,operationId:p.id,invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceItemId:id,status:desired.length?'updated':'no-impact',reason:p.reason,_pending:true});
+   for(const price of p.priceUpdates||[]){const item=byId.get(price.stockItemId);if(!item)continue;for(const key of ['saleRateMinor','purchaseRateMinor'])if(price[key]!==undefined)item[key]=price[key];item.revision=Number(item.revision||0)+1;}continue;
+  }
   const manual=operation.action==='recordStock'&&Array.isArray(p.movements);if(!manual&&(operation.action!=='reviewInvoiceStock'||p.reviewMode!=='invoice')||committed.has(p.id))continue;
-  const createdAt=operation.queuedAt||new Date().toISOString();operations.push({id:p.id,kind:manual?'manual':'review',invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,createdAt,_pending:true});
+  const createdAt=operation.queuedAt||new Date().toISOString();operations.push({id:p.id,kind:manual?'manual':'review',invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceStockRevision:p.invoiceStockRevision,stockEntries:p.movements.filter(row=>byId.has(row.stockItemId)).map(row=>{const item=byId.get(row.stockItemId);return {...row,baseQuantity:stockText(stockDecimal(convertStock(row.quantity,row.unit===item.baseUnit?'1':item.conversion),{signed:true})*(manual?1n:p.invoiceType==='purchase'?1n:-1n))};}),createdAt,_pending:true});
   for(const [index,row] of p.movements.entries()){const item=byId.get(row.stockItemId);if(!item)continue;const quantity=convertStock(row.quantity,row.unit===item.baseUnit?'1':item.conversion),signed=stockDecimal(quantity,{signed:true})*(manual?1n:p.invoiceType==='purchase'?1n:-1n);item.balance=stockText(stockDecimal(item.balance,{signed:true})+signed);movements.push({...row,id:p.id+'-pending-'+index,operationId:p.id,invoiceId:p.invoiceId,invoiceItemId:'',movementDate:p.movementDate,baseQuantity:stockText(signed),reason:p.reason,createdAt,_pending:true});}
   for(const id of p.reviewItemIds||[])reviews.push({id:p.id+'-pending-'+id,operationId:p.id,invoiceId:p.invoiceId,invoiceRevision:p.invoiceRevision,invoiceItemId:id,status:p.movements.length?'updated':'no-impact',reason:p.reason,_pending:true});
   for(const price of p.priceUpdates||[]){const item=byId.get(price.stockItemId);if(!item)continue;for(const key of ['saleRateMinor','purchaseRateMinor'])if(price[key]!==undefined){item[key]=price[key];item[key==='saleRateMinor'?'salePriceUpdatedAt':'purchasePriceUpdatedAt']=createdAt;}item.revision=Number(item.revision||0)+1;}

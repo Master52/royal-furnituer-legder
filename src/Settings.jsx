@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BACKEND_SOURCE, BUNDLED_BACKEND_VERSION } from './backend.js';
 import PreferencesPanel from './PreferencesPanel.jsx';
 import {versionAtLeast} from './version.js';
 import {downloadText} from './preferences.js';
 import {request, validateEndpoint, readAccessToken, accessTokenKey, ACCESS_CHANGED_EVENT} from './api.js';
 
-export default function Settings({ endpoint, info, synced, url, setUrl, connect, disconnect, busy, pending, preferences, savePreferences, range, exportCsv, deleted, loadDeleted, restore, feedback, openTweak }) {
+export default function Settings({ accessRequest,onAccessVerified, endpoint, info, synced, url, setUrl, connect, disconnect, busy, pending, preferences, savePreferences, range, exportCsv, deleted, loadDeleted, restore, feedback, openTweak }) {
+  const tokenInput=useRef(null),accessReturnTab=useRef(null);
   const [copyStatus, setCopyStatus] = useState('');
   const [accessToken,setAccessToken]=useState(()=>endpoint?readAccessToken(endpoint):'');
   const [accessError,setAccessError]=useState('');
@@ -23,6 +24,7 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
     };
     window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
   },[tab,openTweak]);
+  useEffect(()=>{if(!accessRequest){if(accessReturnTab.current!==null){setTab(accessReturnTab.current);accessReturnTab.current=null;}return;}if(accessReturnTab.current===null)accessReturnTab.current=tab;setTab('connection');const timer=setTimeout(()=>{tokenInput.current?.focus();tokenInput.current?.scrollIntoView({block:'center'});},0);return()=>clearTimeout(timer);},[accessRequest,tab]);
   function download() {downloadText(BACKEND_SOURCE,'Code.gs');}
   async function saveAccess(event) {
     event.preventDefault();setAccessError('');setAccessNotice('');setAccessBusy(true);
@@ -31,7 +33,7 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
       if(token.length<32||token.length>128)throw new Error('Enter the access token from Apps Script → Project Settings → Script Properties.');
       const result=await request(destination,undefined,'list',{accessToken:token});
       sessionStorage.setItem(accessTokenKey(destination),token);
-      window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT,{detail:{endpoint:destination}}));
+      window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT,{detail:{endpoint:destination}}));onAccessVerified?.(destination);
       setAccessNotice(versionAtLeast(result.backendVersion,'1.17.0')?'Access verified for this browser session.':'Token saved. Update Code.gs to 1.17.0 or newer to protect this deployment; older scripts do not verify tokens.');
     }catch(error){setAccessError(error.message);}finally{setAccessBusy(false);}
   }
@@ -64,7 +66,7 @@ export default function Settings({ endpoint, info, synced, url, setUrl, connect,
       <li>Choose <strong>Execute as: Me</strong> and <strong>Who has access: Anyone</strong>, then click <strong>Deploy</strong>.</li>
       <li>Google generates a <strong>Web app URL</strong> ending in <strong>/exec</strong>. Copy that URL—not the spreadsheet URL or a /dev URL.</li>
     </ol></section>
-    <form data-shortcut-form className="setup-step" onSubmit={saveAccess}><h3>Ledger access</h3><label>Access token<input type="password" autoComplete="off" required minLength={32} maxLength={128} value={accessToken} onChange={event=>setAccessToken(event.target.value)} disabled={accessBusy}/></label><button className="outline full" disabled={accessBusy||!(endpoint||url)} aria-busy={accessBusy}>{accessBusy?'Verifying access…':'Verify & save access token'}</button>{accessError&&<p className="error" role="alert">{accessError}</p>}{accessNotice&&<p className="notice" role="status">{accessNotice}</p>}<p className="help">Required for Code.gs 1.17.0 and newer. Saved for this browser session only. Verifying access also retries uploads waiting for authorization.</p></form>
+    <form data-shortcut-form className="setup-step" onSubmit={saveAccess}><h3>Ledger access</h3><label>Access token<input ref={tokenInput} aria-label="Access token" type="password" autoComplete="off" required minLength={32} maxLength={128} value={accessToken} onChange={event=>setAccessToken(event.target.value)} disabled={accessBusy}/></label><button className="outline full" disabled={accessBusy||!(endpoint||url)} aria-busy={accessBusy}>{accessBusy?'Verifying access…':'Verify & save access token'}</button>{accessError&&<p className="error" role="alert">{accessError}</p>}{accessNotice&&<p className="notice" role="status">{accessNotice}</p>}<p className="help">Required for Code.gs 1.17.0 and newer. Saved for this browser session only. Verifying access also retries uploads waiting for authorization.</p></form>
     <form data-shortcut-form className="setup-step" onSubmit={connect}><h3>3. Connect your sheet</h3><label>Apps Script web app URL<input required type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://script.google.com/macros/s/…/exec" disabled={busy}/></label>
       <button className="primary full" disabled={busy || accessBusy || (!!pending && !!endpoint)} aria-busy={busy}>{busy ? 'Checking connection…' : 'Test & save connection'}</button>
       {pending && <p className="help">{endpoint ? 'Resolve your pending payment before changing or disconnecting the sheet.' : 'A pending payment remains on this device. Connect its original sheet before retrying.'}</p>}
