@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.25.0';
+const BACKEND_VERSION = '1.27.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -124,6 +124,7 @@ function doPost(e) {
   try {
     if (!e || !e.postData || e.postData.contents.length > 100000) throw new Error('Invalid request.');
     const body = JSON.parse(e.postData.contents);requireAccess_(body);accountRequest_.action=body.action;
+    if(body.action==='verifyAccess')return json_({ok:true,accessVerified:true});
     if(body.action==='deletePayment'){if(!Number.isSafeInteger(body.transaction?._expectedRevision))throw new Error('Payment revision is required for bulk deletion.');body.action='delete';}
     if (body.action === 'list' || body.action === 'listDeleted') {
       const db = ensureSheet_(spreadsheet_());
@@ -517,7 +518,9 @@ function accountAction_(action,t) {
     const noteTotals=new Map();
     notes.filter(note=>note.status==='issued').forEach(note=>{const value=noteTotals.get(note.invoiceId)||{amount:0,cost:0,known:true};const sign=note.type==='credit'?-1:1;value.amount+=sign*note.amountMinor;if(note.costAdjustmentMinor===null)value.known=false;else value.cost+=sign*note.costAdjustmentMinor;noteTotals.set(note.invoiceId,value);});
     invoices.forEach(invoice=>{const adjustment=noteTotals.get(invoice.id);if(!adjustment)return;const net=Number(invoice.totalMinor)+adjustment.amount;if(!Number.isSafeInteger(net)||net<0||net>100000000000)throw new Error('Invalid correction totals. Repair the Sheet before using balances.');if(invoice.costTotalMinor!==null&&invoice.costTotalMinor!==''&&adjustment.known){const cost=Number(invoice.costTotalMinor)+adjustment.cost;if(!Number.isSafeInteger(cost)||cost<0||cost>100000000000)throw new Error('Invalid cost correction totals.');}});
-    return {ok:true,catalogue:catalogueSnapshot_(ss,invoices),parties,invoices:t?.summary?invoices.map(invoice=>{const {items,paymentSnapshot,...summary}=invoice;return {...summary,_summary:true,detailToken:invoiceDetailToken_(invoice),itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes};
+    let stockOverview={};
+    if(t?.includeStockSummary){try{stockOverview={stockSummary:stockSnapshot_(ss,{summary:true})};}catch(error){stockOverview={stockSummaryError:error.message};}}
+    return {ok:true,catalogue:catalogueSnapshot_(ss,invoices),parties,invoices:t?.summary?invoices.map(invoice=>{const {items,paymentSnapshot,...summary}=invoice;return {...summary,_summary:true,detailToken:invoiceDetailToken_(invoice),itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes,...stockOverview};
   }
   if(action==='getInvoices'){
     if(!t||!Array.isArray(t.ids)||!t.ids.length||t.ids.length>500)throw new Error('Choose between 1 and 500 invoices.');
@@ -845,19 +848,19 @@ function invoiceDetailToken_(invoice){const header=['status','invoiceNumber','in
 function invoiceStockKey_(invoice){return JSON.stringify({type:invoice.type,items:(invoice.items||[]).map(item=>({description:item.description,quantityMilli:item.quantityMilli,billingUnit:item.billingUnit||'nos',measurementUnit:item.measurementUnit||'',measurementMode:item.measurementMode||'',measurements:(item.measurements||[]).map(row=>({description:row.description||'',lengthMilli:row.lengthMilli||0,widthMilli:row.widthMilli||0,quantityMilli:row.quantityMilli||0,pieces:row.pieces||0}))}))});}
 function stockReviewMatches_(op,invoice){return op.invoiceStockRevision!==''&&op.invoiceStockRevision!=null&&invoice.stockRevision!==''&&invoice.stockRevision!=null?Number(op.invoiceStockRevision)===Number(invoice.stockRevision):Number(op.invoiceRevision)===Number(invoice.revision||0);}
 function stockEntries_(op,movements){return Array.isArray(op.stockEntries)?op.stockEntries:movements.filter(row=>row.operationId===op.id);}
-function stockSnapshot_(ss){
-  const operations=accountReadRows_(ss,'StockOperations').map(op=>({...op,stockEntries:op.stockEntries?JSON.parse(op.stockEntries):null,supersedesIds:op.supersedesIds?JSON.parse(op.supersedesIds):[]}));
+function stockSnapshot_(ss,{summary=false}={}){
+  const operations=accountReadRows_(ss,'StockOperations').map(op=>summary?op:{...op,stockEntries:op.stockEntries?JSON.parse(op.stockEntries):null,supersedesIds:op.supersedesIds?JSON.parse(op.supersedesIds):[]});
   if(new Set(operations.map(row=>row.id)).size!==operations.length)throw new Error('Duplicate stock operations. Repair the Sheet.');
   const committed=new Set(operations.map(op=>op.id)),reversed=new Set(operations.filter(op=>op.kind==='reversal').map(op=>op.reversesId));
-  const superseded=new Set(operations.flatMap(op=>op.supersedesIds));
+  const superseded=new Set(summary?[]:operations.flatMap(op=>op.supersedesIds));
   const originalItems=accountReadRows_(ss,'StockItems').filter(row=>committed.has(row.operationId));
   const byItem=new Map(originalItems.map(item=>[item.id,{...item,revision:0,salePriceUpdatedAt:item.createdAt,purchasePriceUpdatedAt:item.createdAt}]));
   accountReadRows_(ss,'StockItemVersions').filter(row=>committed.has(row.operationId)).sort((a,b)=>Number(a.revision)-Number(b.revision)).forEach(version=>{const item=byItem.get(version.stockItemId);if(!item||Number(version.revision)!==item.revision+1||version.baseUnit!==item.baseUnit&&item.baseUnit!=='UNIT')throw new Error('Invalid stock item version. Repair the Sheet.');const {id,operationId,stockItemId,createdAt,...fields}=version;byItem.set(stockItemId,{...item,...fields,salePriceUpdatedAt:Number(fields.saleRateMinor)!==Number(item.saleRateMinor)||fields.saleRateUnit!==item.saleRateUnit?createdAt:item.salePriceUpdatedAt,purchasePriceUpdatedAt:Number(fields.purchaseRateMinor)!==Number(item.purchaseRateMinor)||fields.purchaseRateUnit!==item.purchaseRateUnit?createdAt:item.purchasePriceUpdatedAt,revision:Number(version.revision),updatedAt:createdAt});});
   const items=[...byItem.values()];
   const movements=accountReadRows_(ss,'StockMovements').filter(row=>committed.has(row.operationId));
-  const reviews=accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId)&&!superseded.has(row.operationId));
+  const reviews=summary?[]:accountReadRows_(ss,'StockReviews').filter(row=>committed.has(row.operationId)&&!reversed.has(row.operationId)&&!superseded.has(row.operationId));
   const balances=new Map();movements.forEach(row=>balances.set(row.stockItemId,(balances.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
-  return {items:items.map(item=>({...item,saleRateMinor:Number(item.saleRateMinor),purchaseRateMinor:Number(item.purchaseRateMinor),status:item.status||'active',balance:stockText_(balances.get(item.id)||BigInt(0))})),movements,reviews,operations:operations.map(op=>{const {payloadHash,...publicOp}=op;return {...publicOp,reversed:reversed.has(op.id),superseded:superseded.has(op.id)};}),openingDate:operations.find(op=>op.kind==='opening')?.openingDate||''};
+  return {items:items.map(item=>({...item,saleRateMinor:Number(item.saleRateMinor),purchaseRateMinor:Number(item.purchaseRateMinor),status:item.status||'active',balance:stockText_(balances.get(item.id)||BigInt(0))})),movements:summary?[]:movements,reviews,operations:operations.map(op=>{if(summary)return {id:op.id};const {payloadHash,...publicOp}=op;return {...publicOp,reversed:reversed.has(op.id),superseded:superseded.has(op.id)};}),openingDate:operations.find(op=>op.kind==='opening')?.openingDate||'',...(summary?{_summary:true}:{})};
 }
 function stockItem_(input,operationId){
   accountId_(input.id);const baseUnit=input.baseUnit,secondaryUnit=input.secondaryUnit||'';

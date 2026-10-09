@@ -28,6 +28,12 @@ export function stockValueMinor(item){
  const rounded=(magnitude+factor/2n)/factor,result=Number(product<0n?-rounded:rounded);
  return Number.isSafeInteger(result)?result:null;
 }
+// Value an entered quantity using its unit and any purchase-price edit in the draft.
+export function stockEntryValueMinor(item,entry,purchasePrice){
+ if(!item||![item.baseUnit,item.secondaryUnit].filter(Boolean).includes(entry.unit))throw new Error('Choose a valid stock unit.');
+ const balance=convertStock(entry.quantity,entry.unit===item.baseUnit?'1':item.conversion);
+ return stockValueMinor({...item,balance,...(purchasePrice!==undefined?{purchaseRateMinor:stockPrice(purchasePrice)}:{})});
+}
 export function stockMetrics(items){
  const totals=new Map();let low=0,out=0,unconfigured=0;
  for(const item of items){const balance=stockDecimal(item.balance,{signed:true});if(balance<=0n)out++;if(item.lowStock!==''&&item.lowStock!=null&&balance<=stockDecimal(item.lowStock))low++;

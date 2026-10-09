@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {stockEntryValueMinor} from '../src/stock.js';
 import assert from 'node:assert/strict';
 import {accountBackend} from './helpers/accountBackend.js';
 import {stockDecimal,stockText,convertStock,parseStockCsv,stockInvoiceStatus} from '../src/stock.js';
@@ -234,4 +235,17 @@ test('stock activity retains sales through price-only invoice edits and uses ful
  const operations=[{id:'old',kind:'review',invoiceId:'sale',invoiceRevision:0,invoiceStockRevision:0,superseded:true},{id:'latest',kind:'review',invoiceId:'sale',invoiceRevision:3,invoiceStockRevision:1,createdAt:'2026-10-07T12:00:00Z',stockEntries:[{stockItemId:'material',baseQuantity:'-8',movementDate:'2026-10-06'}]}];
  const movements=[{stockItemId:'material',operationId:'old',baseQuantity:'-10',movementDate:'2026-10-05'},{stockItemId:'material',operationId:'latest',baseQuantity:'2',movementDate:'2026-10-06'}];
  const result=stockActivity(items,movements,operations,invoices,'2026-10-07');assert.equal(result.counts.get('material').size,1);
+});
+
+test('stock-entry values convert secondary quantities, use draft purchase prices and preserve signed remaining balances',()=>{
+ const item={baseUnit:'PCS',secondaryUnit:'BOX',conversion:'1000',purchaseRateUnit:'BOX',purchaseRateMinor:26000};
+ assert.equal(stockEntryValueMinor(item,{quantity:'50',unit:'PCS'}),1300);
+ assert.equal(stockEntryValueMinor(item,{quantity:'0.05',unit:'BOX'}),1300);
+ assert.equal(stockEntryValueMinor(item,{quantity:'50',unit:'PCS'},'300'),1500);
+ assert.equal(stockEntryValueMinor(item,{quantity:'-50',unit:'PCS'}),-1300);
+ assert.equal(stockEntryValueMinor({...item,purchaseRateMinor:0},{quantity:'50',unit:'PCS'}),null);
+ assert.equal(stockEntryValueMinor({baseUnit:'KG',purchaseRateUnit:'KG',purchaseRateMinor:12500},{quantity:'1.25',unit:'KG'}),15625);
+ assert.throws(()=>stockEntryValueMinor(item,{quantity:'',unit:'PCS'}));
+ assert.throws(()=>stockEntryValueMinor(item,{quantity:'1',unit:'KG'}));
+ assert.throws(()=>stockEntryValueMinor(item,{quantity:'1',unit:'PCS'},'2.345'));
 });

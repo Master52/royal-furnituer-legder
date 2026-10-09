@@ -2,7 +2,7 @@ import React,{useEffect,useState} from 'react';
 import AccountDialog from './AccountDialog.jsx';
 import {keyboardChord,shortcutLabel,shortcutScope,shortcutAvailable,activateShortcut} from './keyboard.js';
 
-const navigation=[['alt+shift+1','Dashboard'],['alt+shift+2','Parties'],['alt+shift+3','History'],['alt+shift+4','Settings'],['alt+shift+5','Stock'],['mod+k','Search this page'],['alt+/','Shortcut guide']];
+const navigation=[['alt+shift+1','Dashboard'],['alt+shift+2','Parties'],['alt+shift+3','History'],['alt+shift+4','Settings'],['alt+shift+5','Stock'],['alt+shift+6','Tools'],['mod+k','Search this page'],['alt+/','Shortcut guide']];
 const entryGuides={
  payment:[['alt+enter','Amount'],['alt+i','Payment in'],['alt+o','Payment out'],['alt+1','Sale'],['alt+2','Purchase'],['alt+3','Bhara'],['alt+4','Expense'],['alt+c','Cash'],['alt+l','Online'],['alt+k','Cash + Online'],['alt+q','Party / Payee'],['alt+v','Notes'],['alt+r','Cash received'],['alt+h','Cash change'],['alt+j','Online change']],
  invoice:[['alt+1','Sales invoice'],['alt+2','Purchase invoice'],['alt+3','Credit note'],['alt+4','Debit note'],['alt+q','Party'],['alt+d','Date'],['alt+h','Challan'],['alt+a','Add item'],['alt+j','Item name'],['alt+u','Quantity'],['alt+b','Billing unit'],['alt+l','Length'],['alt+w','Width'],['alt+f','Pieces'],['alt+z','Add grouped size'],['alt+r','Rate'],['alt+c','Cost price'],['alt+x','Discount'],['alt+v','Invoice notes'],['alt+g','Show / hide profit']],
@@ -25,7 +25,7 @@ export default function KeyboardShortcuts({onNavigate,onSettings,onSearch}){
    if(chord==='alt+/'){event.preventDefault();if(!guide)openGuide();return;}
    if(guide){event.preventDefault();return;}
    const scope=shortcutScope(),inDialog=scope?.matches('dialog');
-   if(!inDialog&&/^alt\+shift\+[1-5]$/.test(chord)){event.preventDefault();const digit=chord.at(-1);if(digit==='4')onSettings();else onNavigate({1:'dashboard',2:'accounts',3:'history',5:'stock'}[digit]);return;}
+   if(!inDialog&&/^alt\+shift\+[1-6]$/.test(chord)){event.preventDefault();const digit=chord.at(-1);if(digit==='4')onSettings();else onNavigate({1:'dashboard',2:'accounts',3:'history',5:'stock',6:'tools'}[digit]);return;}
    if(chord==='mod+k'){
     const search=[...scope?.querySelectorAll('input[type=search],.invoice-party-picker input[role=combobox]')||[]].find(element=>shortcutAvailable(element));
     if(search){event.preventDefault();activateShortcut(search);}else if(!inDialog){event.preventDefault();onSearch();}

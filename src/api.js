@@ -1,3 +1,4 @@
+import {recordRequestTiming} from './requestTimings.js';
 export function validateEndpoint(value) {
   const url = new URL(value);
   if (url.origin !== 'https://script.google.com' || !/^\/macros\/s\/[\w-]+\/exec$/.test(url.pathname) || url.search || url.hash) throw new Error('Use the deployed Apps Script URL ending in /exec.');
@@ -8,7 +9,24 @@ export const ACCESS_REQUIRED_EVENT='rf:access-required';
 export const ACCESS_CHANGED_EVENT = 'rf:access-changed';
 export const accessTokenKey = endpoint => `rf.access-token:${validateEndpoint(endpoint)}`;
 export function readAccessToken(endpoint) {
-  try { return sessionStorage.getItem(accessTokenKey(endpoint)) || ''; } catch { return ''; }
+  let key;try{key=accessTokenKey(endpoint);}catch{return '';}
+  try{const remembered=localStorage.getItem(key);if(remembered)return remembered;}catch{}
+  try { return sessionStorage.getItem(key) || ''; } catch { return ''; }
+}
+export function accessIsRemembered(endpoint){try{return Boolean(localStorage.getItem(accessTokenKey(endpoint)));}catch{return false;}}
+export function saveAccessToken(endpoint,token,remember=false){
+  const key=accessTokenKey(endpoint);
+  if(remember){localStorage.setItem(key,token);try{sessionStorage.setItem(key,token);}catch{}}
+  else{localStorage.removeItem(key);sessionStorage.setItem(key,token);}
+}
+export function forgetAccessToken(endpoint){
+  const key=accessTokenKey(endpoint);let failure;
+  for(const name of ['localStorage','sessionStorage']){try{globalThis[name]?.removeItem(key);}catch(error){failure=error;}}
+  if(failure)throw new Error('Browser storage prevented forgetting access. Check browser storage permissions.');
+}
+export async function verifyAccess(endpoint,token,send=request){
+  try{return await send(endpoint,{},'verifyAccess',{accessToken:token});}
+  catch(error){if(!/Unsupported action/i.test(error.message))throw error;return send(endpoint,undefined,'list',{accessToken:token});}
 }
 export function serializeRequest(endpoint, transaction, action = 'create', accessToken = readAccessToken(endpoint)) {
   const body = JSON.stringify({action:transaction ? action : 'list',transaction:transaction ?? {},...(accessToken ? {accessToken} : {})});
@@ -17,7 +35,7 @@ export function serializeRequest(endpoint, transaction, action = 'create', acces
 }
 // Apps Script may spend 25 seconds waiting for its write lock before doing work.
 export const REQUEST_TIMEOUT_MS = 60000;
-const READ_ACTIONS = new Set(['list', 'listDeleted', 'listAccounts', 'getInvoices', 'listStock']);
+const READ_ACTIONS = new Set(['verifyAccess','list', 'listDeleted', 'listAccounts', 'getInvoices', 'listStock']);
 const CREATE_ACTIONS = new Set(['create', 'createParty', 'createInvoice', 'createInvoiceNote', 'importStock', 'createStockItem', 'updateStockItem', 'bulkUpdateStockItems', 'deleteStockItems', 'recordStock', 'reviewInvoiceStock', 'reverseStock']);
 const EDIT_ACTIONS = new Set(['update', 'updateParty', 'updateInvoice', 'updateInvoiceNote']);
 function safeToRetry(transaction, action) {
@@ -36,7 +54,9 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
     // Serialize once: an ambiguous upload must retry the same ID and edit token.
     let requestToken=options.accessToken??readAccessToken(endpoint);
     let body = serializeRequest(endpoint, transaction, action, requestToken);
+    let renewedAccess=false;
     for (let attempt = 0; ; attempt++) {
+      const started=Date.now();let timingResult,status='failed';
       try {
         const fetchOptions = {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body, redirect:'follow', cache:'no-store', credentials:'omit', signal:timeoutSignal(REQUEST_TIMEOUT_MS)};
         const response = await fetchImpl(endpoint, fetchOptions);
@@ -54,6 +74,7 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
         try { result = JSON.parse(text); }
         catch { throw connectionError('Google Sheets returned an invalid response. Please retry.', true); }
         if (!result || typeof result !== 'object' || Array.isArray(result)) throw connectionError('Google Sheets did not return ledger data. Check the deployed Apps Script URL.');
+        timingResult=result;
         if (!result.ok) {
           const error = new Error(result.error || 'Google Sheets returned an error.');
           // A lock wait failure means Google never started this operation.
@@ -62,15 +83,17 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
           throw error;
         }
         if (!transaction && !Array.isArray(result.transactions)) throw new Error('This URL did not return a ledger. Deploy the Code.gs provided in Settings and try again.');
-        return result;
+        status='success';return result;
       } catch (cause) {
         let error = cause;
-        if(cause.code==='UNAUTHORIZED'&&!options.accessToken){const current=readAccessToken(endpoint);if(current&&current!==requestToken&&attempt===0){requestToken=current;body=serializeRequest(endpoint,transaction,action,current);continue;}if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent(ACCESS_REQUIRED_EVENT,{detail:{endpoint}}));}
+        if(cause.code==='UNAUTHORIZED'){status='unauthorized';if(!options.accessToken){const current=readAccessToken(endpoint);if(current&&current!==requestToken&&!renewedAccess){renewedAccess=true;requestToken=current;body=serializeRequest(endpoint,transaction,action,current);continue;}if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent(ACCESS_REQUIRED_EVENT,{detail:{endpoint}}));}}
         if (['TimeoutError','AbortError'].includes(cause.name)) error = connectionError('Google Sheets took too long to respond. Your saved changes remain on this device; retry to confirm them.', true);
         else if (cause instanceof TypeError) error = connectionError('Connection to Google Sheets was interrupted. Your saved changes remain on this device. Check your connection or deployment access.', true);
         if (attempt >= 1 || !error.retryable || !safeToRetry(transaction, action) || globalThis.navigator?.onLine === false) throw error;
-        await wait(1500);
+      } finally {
+        recordRequestTiming(endpoint,{action:transaction?action:'list',durationMs:Date.now()-started,attempt:attempt+1,status,result:timingResult});
       }
+      await wait(1500);
     }
   };
 }

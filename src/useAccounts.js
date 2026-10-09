@@ -51,7 +51,7 @@ export default function useAccounts(endpoint, enabled) {
     setRefreshing(true);
     flight.promise=(async()=>{
       try {
-        const result=await request(endpoint,{summary:true},'listAccounts');
+        const result=await request(endpoint,{summary:true,includeStockSummary:true},'listAccounts');
         if (!Array.isArray(result.parties) || !Array.isArray(result.invoices) || !Array.isArray(result.transactions)) throw new Error('Update the test Sheet to Code.gs 1.7.0 or newer and deploy a new version.');
         if(active.current!==endpoint || generation.current!==currentGeneration)return null;
         if(lastAppliedRead.current!==appliedBeforeRead){flight.stale=true;return snapshotRef.current?.data||null;}
@@ -128,8 +128,6 @@ export default function useAccounts(endpoint, enabled) {
     })();detailFlights.current.set(key,promise);for(const id of missing)detailById.current.set(detailKey(id),promise);
     try{return await promise;}finally{detailFlights.current.delete(key);for(const id of missing)if(detailById.current.get(detailKey(id))===promise)detailById.current.delete(detailKey(id));}
   }
-  const preloadKey=data.invoices.slice(-12).map(row=>row.id+':'+row.detailToken).join('|');
-  useEffect(()=>{if(!loaded||cached||!preloadKey)return;const timer=setTimeout(()=>{const recent=snapshotRef.current?.data.invoices.slice().sort((a,b)=>String(b.createdAt||b.invoiceDate).localeCompare(String(a.createdAt||a.invoiceDate))).slice(0,12);if(recent?.length)loadInvoiceDetails(recent.filter(row=>!Array.isArray(row.items)).map(row=>row.id)).catch(()=>{});},250);return()=>clearTimeout(timer);},[preloadKey,loaded,cached,endpoint]);
   const refreshIfStale=useCallback(()=>{
     const current=snapshotRef.current;
     if(!current || current.endpoint!==endpoint || current.cached || Date.now()-Date.parse(current.savedAt)>60000) return reload();
@@ -225,7 +223,7 @@ export default function useAccounts(endpoint, enabled) {
     window.addEventListener('online',online);return()=>window.removeEventListener('online',online);
   });
   useEffect(()=>{
-    const changed=event=>{if(event.detail?.endpoint!==endpoint)return;setReadError('');setError('');reload({fresh:true});const operation=queueRef.current[0];if(operation?.failure?.code==='UNAUTHORIZED')send(operation);};
+    const changed=event=>{if(event.detail?.endpoint!==endpoint)return;setReadError('');setError('');reload();const operation=queueRef.current[0];if(operation?.failure?.code==='UNAUTHORIZED')send(operation);};
     window.addEventListener(ACCESS_CHANGED_EVENT,changed);return()=>window.removeEventListener(ACCESS_CHANGED_EVENT,changed);
   });
   async function save(action,payload){
