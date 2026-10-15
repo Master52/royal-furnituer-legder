@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.28.0';
+const BACKEND_VERSION = '1.29.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -130,6 +130,10 @@ function doPost(e) {
       const db = ensureSheet_(spreadsheet_());
       return json_({ok:true,transactions:visiblePayments_(spreadsheet_(),records_(db.sheet,db.headers)).filter(t => body.action==='listDeleted' ? Boolean(t.deletedAt) : !t.deletedAt)});
     }
+    if(['saveSalaryTerms','createSalaryPayout'].includes(body.action)){
+      const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;
+      try{return json_(salaryAction_(body.action,body.transaction));}catch(error){if(!accountRequest_.writes&&!error.code)error.code='SALARY_REJECTED';throw error;}
+    }
     if(['listStock','importStock','createStockItem','updateStockItem','bulkUpdateStockItems','deleteStockItems','recordStock','reviewInvoiceStock','adjustInvoiceStock','reverseStock'].includes(body.action)){
       {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
       try{return json_(stockAction_(body.action,body.transaction));}catch(error){if(!accountRequest_.writes&&!error.code)error.code='STOCK_REJECTED';throw error;}
@@ -145,6 +149,8 @@ function doPost(e) {
     {const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;}
     const {sheet,headers} = ensureSheet_(spreadsheet_());
     const existing = records_(sheet,headers).find(row => row.id === t.id);
+    if(body.action==='update'&&salaryMetadata_(existing))throw new Error('Salary payouts cannot be edited. Delete the payout and record a replacement from Salary.');
+    if(body.action==='restore'&&existing?.deletedAt&&salaryMetadata_(existing))salaryValidateRestore_(spreadsheet_(),existing);
     if(body.action==='update'&&hasSettlement_(existing)&&t.settlementDiscountMinor===undefined)throw new Error('Update the app before editing a full & final payment.');
     if(existing?.invoiceId&&body.action==='create')throw new Error('Retry this payment through its original invoice.');
     if(body.action==='create'&&t.invoiceId)throw new Error('Linked payments must be created with their invoice.');
@@ -283,6 +289,7 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
+  SalaryTerms:['id','profileId','name','kind','monthlyMinor','minimumMinor','spreadMonths','effectiveMonth','startMonth','openingBalanceMinor','revision','createdAt'],
   StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt','status'],
   StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
   StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
@@ -520,7 +527,7 @@ function accountAction_(action,t) {
     invoices.forEach(invoice=>{const adjustment=noteTotals.get(invoice.id);if(!adjustment)return;const net=Number(invoice.totalMinor)+adjustment.amount;if(!Number.isSafeInteger(net)||net<0||net>100000000000)throw new Error('Invalid correction totals. Repair the Sheet before using balances.');if(invoice.costTotalMinor!==null&&invoice.costTotalMinor!==''&&adjustment.known){const cost=Number(invoice.costTotalMinor)+adjustment.cost;if(!Number.isSafeInteger(cost)||cost<0||cost>100000000000)throw new Error('Invalid cost correction totals.');}});
     let stockOverview={};
     if(t?.includeStockSummary){try{stockOverview={stockSummary:stockSnapshot_(ss,{summary:true})};}catch(error){stockOverview={stockSummaryError:error.message};}}
-    return {ok:true,catalogue:catalogueSnapshot_(ss,invoices),parties,invoices:t?.summary?invoices.map(invoice=>{const {items,paymentSnapshot,...summary}=invoice;return {...summary,_summary:true,detailToken:invoiceDetailToken_(invoice),itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes,...stockOverview};
+    return {ok:true,salaryTerms:salaryTerms_(ss),catalogue:catalogueSnapshot_(ss,invoices),parties,invoices:t?.summary?invoices.map(invoice=>{const {items,paymentSnapshot,...summary}=invoice;return {...summary,_summary:true,detailToken:invoiceDetailToken_(invoice),itemSearch:items.flatMap(item=>[item.description,item.itemNote,...(item.measurements||[]).map(row=>row.description)]).join(' ')};}):invoices,transactions,notes,...stockOverview};
   }
   if(action==='getInvoices'){
     if(!t||!Array.isArray(t.ids)||!t.ids.length||t.ids.length>500)throw new Error('Choose between 1 and 500 invoices.');
@@ -1014,4 +1021,53 @@ function stockAction_(action,t){
   stockStage_(ss,'StockItems',items);stockStage_(ss,'StockItemVersions',versions);stockStage_(ss,'StockMovements',movements);stockStage_(ss,'StockReviews',reviews);
   SpreadsheetApp.flush();accountWrite_(ss,'StockOperations',operation);SpreadsheetApp.flush();
   return {ok:true,id:t.id,stock:stockSnapshot_(ss)};
+}
+
+// Salary earnings are derived by month; only settings versions and real payouts are written.
+function salaryMonth_(){return new Date(Date.now()+330*60000).toISOString().slice(0,7);}
+function salaryValidMonth_(value){return typeof value==='string'&&/^\d{4}-\d{2}$/.test(value)&&Number(value.slice(0,4))>=2000&&Number(value.slice(0,4))<=2200&&Number(value.slice(5))>=1&&Number(value.slice(5))<=12;}
+function salaryMetadata_(row){try{const value=typeof row?.metadata==='string'?JSON.parse(row.metadata):row?.metadata;return value?.salaryProfileId?value:null;}catch{return null;}}
+function salaryNormalizeTerms_(t){
+  if(!t)throw new Error('Salary settings are required.');accountId_(t.id);accountId_(t.profileId);
+  const name=accountText_(t.name,150,true),monthlyMinor=Number(t.monthlyMinor),minimumMinor=Number(t.minimumMinor),spreadMonths=Number(t.spreadMonths),openingBalanceMinor=Number(t.openingBalanceMinor);
+  if(!Number.isSafeInteger(monthlyMinor)||monthlyMinor<=0||monthlyMinor>33333333333)throw new Error('Invalid monthly salary.');
+  if(!Number.isSafeInteger(minimumMinor)||minimumMinor<0||minimumMinor>monthlyMinor)throw new Error('Minimum payout must be between zero and the monthly salary.');
+  if(!Number.isInteger(spreadMonths)||spreadMonths<1||spreadMonths>24)throw new Error('Choose an adjustment period of 1 to 24 months.');
+  accountAmount_(openingBalanceMinor,true);
+  if(!['owner','staff'].includes(t.kind)||!salaryValidMonth_(t.startMonth)||!salaryValidMonth_(t.effectiveMonth)||t.effectiveMonth<t.startMonth)throw new Error('Invalid salary type or effective month.');
+  return {id:t.id,profileId:t.profileId,name,kind:t.kind,monthlyMinor,minimumMinor,spreadMonths,openingBalanceMinor,startMonth:t.startMonth,effectiveMonth:t.effectiveMonth};
+}
+function salaryTerms_(ss){return accountReadRows_(ss,'SalaryTerms').map(row=>({...salaryNormalizeTerms_(row),revision:Number(row.revision),createdAt:row.createdAt}));}
+function salaryAt_(terms,profileId,month){return terms.filter(row=>row.profileId===profileId&&row.effectiveMonth<=month).sort((a,b)=>a.effectiveMonth.localeCompare(b.effectiveMonth)||a.revision-b.revision).pop();}
+function salaryValidateCap_(ss,terms,profileId,date,amount,excludeId=''){
+  const setting=salaryAt_(terms,profileId,date.slice(0,7));if(!setting)throw new Error('Payout date predates this salary profile.');
+  const paid=accountReadRows_(ss,'Transactions').filter(row=>!row.deletedAt&&row.id!==excludeId&&row.transactionDate.slice(0,7)===date.slice(0,7)&&salaryMetadata_(row)?.salaryProfileId===profileId).reduce((sum,row)=>sum+Number(row.amountMinor),0);
+  if(paid+amount>setting.monthlyMinor*3)throw new Error('Monthly payouts cannot exceed three months of salary.');return setting;
+}
+function salaryValidateRestore_(ss,row){salaryValidateCap_(ss,salaryTerms_(ss),salaryMetadata_(row).salaryProfileId,row.transactionDate,Number(row.amountMinor),row.id);}
+function salaryAction_(action,t){
+  const ss=spreadsheet_(),terms=salaryTerms_(ss);if(!t)throw new Error('Salary request is required.');accountId_(t.id);
+  if(action==='saveSalaryTerms'){
+    const normalized=salaryNormalizeTerms_(t),previous=terms.filter(row=>row.profileId===t.profileId).sort((a,b)=>a.revision-b.revision).pop(),existing=terms.find(row=>row.id===t.id);
+    if(existing){if(!accountSame_(existing,normalized,Object.keys(normalized)))throw new Error('This salary request ID was used for different settings.');return {ok:true,id:t.id,record:existing};}
+    if(!Number.isSafeInteger(t._expectedRevision)||t._expectedRevision!==(previous?.revision||0))throw new Error('Salary settings changed. Refresh and review before saving.');
+    if(previous){
+      if(normalized.kind!==previous.kind||normalized.startMonth!==previous.startMonth||normalized.openingBalanceMinor!==previous.openingBalanceMinor)throw new Error('Salary type, start month and opening balance cannot be changed.');
+      if(normalized.effectiveMonth<salaryMonth_())throw new Error('Salary changes must start this month or later.');
+      const projected=[...terms,{...normalized,revision:previous.revision+1}],months=new Set(accountReadRows_(ss,'Transactions').filter(row=>!row.deletedAt&&salaryMetadata_(row)?.salaryProfileId===t.profileId&&row.transactionDate.slice(0,7)>=normalized.effectiveMonth).map(row=>row.transactionDate.slice(0,7)));
+      months.forEach(month=>salaryValidateCap_(ss,projected,t.profileId,month+'-01',0));
+    }else if(normalized.effectiveMonth!==normalized.startMonth)throw new Error('The first salary must begin in the starting month.');
+    const record={...normalized,revision:(previous?.revision||0)+1,createdAt:new Date().toISOString()};accountAppendRows_(ss,'SalaryTerms',[record]);SpreadsheetApp.flush();return {ok:true,id:t.id,record};
+  }
+  accountId_(t.profileId);const {sheet,headers}=ensureSheet_(ss),all=accountReadRows_(ss,'Transactions'),existing=all.find(row=>row.id===t.id);
+  if(!validDate_(t.transactionDate)||t.transactionDate>new Date(Date.now()+330*60000).toISOString().slice(0,10)||!['Cash','Online'].includes(t.method)||!Number.isSafeInteger(t.amountMinor)||t.amountMinor<=0||t.amountMinor>100000000000)throw new Error('Enter a valid payout amount, past or current date, and Cash/Online method.');
+  const notes=accountText_(t.notes||'',500);
+  if(existing){if(existing.deletedAt||salaryMetadata_(existing)?.salaryProfileId!==t.profileId||existing.transactionDate!==t.transactionDate||existing.method!==t.method||Number(existing.amountMinor)!==t.amountMinor||existing.notes!==notes)throw new Error('This payout ID was used for a different or deleted payment.');return {ok:true,id:t.id,transaction:existing};}
+  const latest=terms.filter(row=>row.profileId===t.profileId).sort((a,b)=>a.revision-b.revision).pop();
+  if(!latest||!Number.isSafeInteger(t._expectedRevision)||latest.revision!==t._expectedRevision)throw new Error('Salary settings changed. Refresh and review this payout.');
+  const setting=salaryValidateCap_(ss,terms,t.profileId,t.transactionDate,t.amountMinor);
+  const transaction={id:t.id,schemaVersion:1,recordType:'payment',transactionDate:t.transactionDate,transactionTime:'12:00',timezone:'Asia/Kolkata',direction:'out',category:'Expense',method:t.method,amountMinor:t.amountMinor,currency:'INR',party:setting.name,partyId:'',notes,chequeDate:'',createdAt:new Date().toISOString(),metadata:JSON.stringify({salaryProfileId:t.profileId,salaryKind:setting.kind,salaryTermsId:setting.id}),revision:0};validate_(transaction);
+  // One row is both the salary payout and the cash movement: retries cannot double-book it.
+  if(accountRequest_)accountRequest_.writes++;
+  sheet.getRange(sheet.getLastRow()+1,1,1,headers.length).setNumberFormat('@').setValues([literalAccountRow_(headers,transaction)]);SpreadsheetApp.flush();return {ok:true,id:t.id,transaction};
 }

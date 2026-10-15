@@ -1,3 +1,4 @@
+import {salaryMetadata} from './salary.js';
 import {invoiceSummary} from './accounts.js';
 import {transactionIntegrityIssue,duplicateTransactionIds,hasSettlement} from './ledger.js';
 export function businessFigures(invoices, notes, transactions, range) {
@@ -9,7 +10,7 @@ export function businessFigures(invoices, notes, transactions, range) {
     if(hasSettlement(payment))settlementAdjustments+=Number(payment.settlementDiscountMinor);
     const amount=Number(payment.amountMinor);
     if(payment.direction==='in')collected+=amount;else paid+=amount;
-    if(payment.category==='Expense')expenses+=amount*(payment.direction==='out'?1:-1);
+    if(payment.category==='Expense'&&salaryMetadata(payment)?.salaryKind!=='owner')expenses+=amount*(payment.direction==='out'?1:-1);
   }
   return {...invoice,grossProfit:invoice.grossProfit-settlementAdjustments,collected,paid,expenses,settlementAdjustments,operatingResult:invoice.missingCosts?null:invoice.grossProfit-settlementAdjustments-expenses};
 }

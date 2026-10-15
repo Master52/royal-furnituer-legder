@@ -3,7 +3,7 @@ import { request, serializeRequest, ACCESS_CHANGED_EVENT } from './api.js';
 import { accountBalances } from './accounts.js';
 import { loadAccountCache, saveAccountCache } from './storage.js';
 const EMPTY_NOTES=[];
-const EMPTY_ACCOUNTS = {catalogue:[],parties:[],invoices:[],transactions:[],notes:[]};
+const EMPTY_ACCOUNTS = {salaryTerms:[],catalogue:[],parties:[],invoices:[],transactions:[],notes:[]};
 import { ACCOUNT_QUEUE_KEY, operationKey, readAccountQueue, writeAccountQueue, queueLock, uploadLock } from './accountQueue.js';
 export default function useAccounts(endpoint, enabled) {
   const [snapshot,setSnapshot] = useState(null);
@@ -172,12 +172,17 @@ export default function useAccounts(endpoint, enabled) {
         acknowledged=true;
         if(active.current!==operation.endpoint)return false;
         let record=result.record;
+        if(operation.action==='saveSalaryTerms'){
+          if(!record||record.id!==operation.payload.id)throw new Error('Salary settings were not confirmed. Retry the saved request.');
+          const current=snapshotRef.current;if(!current||current.endpoint!==endpoint)throw new Error('Refresh to confirm these salary settings.');
+          const next={...current,data:{...current.data,salaryTerms:[...(current.data.salaryTerms||[]).filter(row=>row.id!==record.id),record]}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
+        }else
         if(operation.action==='deletePayment'){
           if(result.deleted!==true)throw new Error('Payment deletion was not confirmed.');
           const current=snapshotRef.current;const next={...current,data:{...current.data,transactions:current.data.transactions.filter(row=>row.id!==operation.payload.id)}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});
-        }else if(!applyRecord(operation.action,operation.action==='create'?result.transaction:record)){
+        }else if(!applyRecord(operation.action==='createSalaryPayout'?'create':operation.action,['create','createSalaryPayout'].includes(operation.action)?result.transaction:record)){
           const refreshed=await reload({fresh:true});
-          record=operation.action==='create'?refreshed?.transactions.find(item=>item.id===operation.payload.id):operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
+          record=['create','createSalaryPayout'].includes(operation.action)?refreshed?.transactions.find(item=>item.id===operation.payload.id):operation.action.includes('Note')?refreshed?.notes?.find(item=>item.id===operation.payload.id):operation.action.includes('Party')?refreshed?.parties.find(item=>item.id===operation.payload.id):refreshed?.invoices.find(item=>item.id===operation.payload.id);
           if(!record)throw new Error('Upload was acknowledged. Retry to confirm the saved record.');
         }
         if(operation.action==='createInvoice'&&operation.payload.payment){
@@ -205,21 +210,21 @@ export default function useAccounts(endpoint, enabled) {
       return false;
     }finally{working.current=false;setBusy(false);setUploadTick(value=>value+1);}
   }
-  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote','updateInvoice'].includes(item.action));
+  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote','updateInvoice','saveSalaryTerms','createSalaryPayout'].includes(item.action));
   async function enqueue(action,payload){
     if(!canQueue)return false;
     const operation={endpoint,action,payload};
-    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote','updateInvoice'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
+    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote','updateInvoice','saveSalaryTerms','createSalaryPayout'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
     catch(error){setError(error.message||'Browser storage is unavailable. The record was not queued.');return false;}
     if(!pending){setError('');setRejected(false);}
     return true;
   }
   // Dependent invoices wait until their newly created party is confirmed.
   useEffect(()=>{
-    if(pending && !pending.failure && ['create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
+    if(pending && !pending.failure && ['saveSalaryTerms','createSalaryPayout','create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(pending.action) && pending.endpoint===endpoint && enabled && !pending.invalid)send(pending);
   },[pending,endpoint,enabled,uploadTick]);
   useEffect(()=>{
-    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(operation.action))send(operation);};
+    const online=()=>{const operation=queueRef.current[0];if(operation&&!operation.failure?.rejected&&['saveSalaryTerms','createSalaryPayout','create','createParty','createInvoice','createInvoiceNote','updateInvoice','deleteParty','deleteInvoice','updateInvoiceNote','deleteInvoiceNote','deletePayment'].includes(operation.action))send(operation);};
     window.addEventListener('online',online);return()=>window.removeEventListener('online',online);
   });
   useEffect(()=>{
@@ -246,8 +251,8 @@ export default function useAccounts(endpoint, enabled) {
       const snapshot=await reload({fresh:true});
       if(!snapshot)return;
       const {action,payload}=pending;
-      const existing=['create','deletePayment'].includes(action)?snapshot.transactions.find(row=>row.id===payload.id):action.includes('Note')?snapshot.notes?.find(row=>row.id===payload.id):action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
-      const mayHaveSaved=action==='deletePayment'?!existing:action==='deleteParty'?Boolean(existing?.archivedAt):['deleteInvoice','deleteInvoiceNote'].includes(action)?existing?.status==='deleted':['create','createParty','createInvoice','createInvoiceNote'].includes(action)?Boolean(existing):['updateParty','updateInvoice','updateInvoiceNote'].includes(action)?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
+      const existing=action==='saveSalaryTerms'?snapshot.salaryTerms?.find(row=>row.id===payload.id):['createSalaryPayout','create','deletePayment'].includes(action)?snapshot.transactions.find(row=>row.id===payload.id):action.includes('Note')?snapshot.notes?.find(row=>row.id===payload.id):action.includes('Party')?snapshot.parties.find(row=>row.id===payload.id):snapshot.invoices.find(row=>row.id===payload.id);
+      const mayHaveSaved=action==='deletePayment'?!existing:action==='deleteParty'?Boolean(existing?.archivedAt):['deleteInvoice','deleteInvoiceNote'].includes(action)?existing?.status==='deleted':['saveSalaryTerms','createSalaryPayout','create','createParty','createInvoice','createInvoiceNote'].includes(action)?Boolean(existing):['updateParty','updateInvoice','updateInvoiceNote'].includes(action)?existing?.lastEditId===payload._editId:existing?.status==='cancelled';
       if(mayHaveSaved){setError('This record exists in Google Sheets. Retry the saved request to confirm it before continuing.');return;}
       if(action==='createParty' && queueRef.current.some(item=>item.action==='createInvoice'&&item.payload.partyId===payload.id)){setError('An invoice is waiting for this party. Correct the rejected party before retrying.');return;}
       await updateQueue(items=>items.filter(item=>pending.settlementId&&pending.action==='create'?item.settlementId!==pending.settlementId:operationKey(item)!==operationKey(pending)));setRejected(false);setError('');return true;
@@ -285,5 +290,5 @@ export default function useAccounts(endpoint, enabled) {
   const pendingNotes=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoiceNote'&&!noteIds.has(item.payload.id)&&invoiceById.has(item.payload.invoiceId)&&invoiceById.get(item.payload.invoiceId).status!=='deleted').map(item=>{const invoice=invoiceById.get(item.payload.invoiceId);return {...item.payload,invoiceNumber:invoice?.invoiceNumber,partyId:invoice?.partyId,partyName:invoice?.partyName,partyPhone:invoice?.partyPhone,partyAddress:invoice?.partyAddress,invoiceType:invoice?.type,status:'pending',_pending:true,noteNumber:'Awaiting note number'};}),[queuedHere,noteIds,invoiceById]);
   const partyBalances=useMemo(()=>accountBalances(parties,invoices,data.transactions,notes),[parties,invoices,data.transactions,notes]);
   const notedInvoiceIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.invoiceId)),[data.notes]);
-  return {...data,stockInvoices:data.invoices,catalogueWarning,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoiceEdit:payload=>enqueue('updateInvoice',payload),queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
+  return {...data,endpoint,stockInvoices:data.invoices,catalogueWarning,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueSalaryTerms:payload=>enqueue('saveSalaryTerms',payload),queueSalaryPayout:payload=>enqueue('createSalaryPayout',payload),queueInvoiceEdit:payload=>enqueue('updateInvoice',payload),queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
 }
