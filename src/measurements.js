@@ -1,5 +1,5 @@
 // Keep these pure calculation functions identical to the billing helpers in Code.gs.
-export const BILLING_UNITS={nos:'NOS.',sqft:'SQ. FT.',rft:'RUNNING FT.',kg:'KG'};
+export const BILLING_UNITS={nos:'NOS.',box:'BOX',sqft:'SQ. FT.',rft:'RUNNING FT.',kg:'KG'};
 export const blankMeasurement=()=>({description:'',length:'',width:'',quantity:'1',pieces:'1'});
 export function scaledInput(value,label){
   const text=String(value??'').trim();
@@ -16,7 +16,7 @@ export function draftMeasurements(item){
 }
 export function billingQuantity_(item){
   const unit=item.billingUnit||'',mode=item.measurementMode||'quantity';
-  if(!['','nos','sqft','rft','kg'].includes(unit))throw new Error('Choose a supported billing unit.');
+  if(!['','nos','box','sqft','rft','kg'].includes(unit))throw new Error('Choose a supported billing unit.');
   const rows=item.measurements||[];
   if(!Array.isArray(rows)||rows.length>100)throw new Error('Each item group supports at most 100 measurement rows.');
   if(!unit&&rows.length)throw new Error('Choose a billing unit for grouped measurements.');

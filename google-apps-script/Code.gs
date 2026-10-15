@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.27.0';
+const BACKEND_VERSION = '1.28.0';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -782,7 +782,7 @@ function validateNoteTotals_(invoice,notes){
 // Exact rational billing; mirrored in src/measurements.js and checked by regression tests.
 function billingQuantity_(item){
   const unit=item.billingUnit||'',mode=item.measurementMode||'quantity';
-  if(!['','nos','sqft','rft','kg'].includes(unit))throw new Error('Choose a supported billing unit.');
+  if(!['','nos','box','sqft','rft','kg'].includes(unit))throw new Error('Choose a supported billing unit.');
   const rows=item.measurements||[];
   if(!Array.isArray(rows)||rows.length>100)throw new Error('Each item group supports at most 100 measurement rows.');
   if(!unit&&rows.length)throw new Error('Choose a billing unit for grouped measurements.');

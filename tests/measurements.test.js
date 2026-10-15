@@ -144,3 +144,16 @@ test('optional item descriptions survive saving, search, drafts and versioned ed
  assert.throws(()=>makeInvoice(draft([item({itemNote:'x'.repeat(501)})]),id),/500 characters/);
  assert.equal(backend.post('createInvoice',{...payload,id:'invoice-description-0002',items:[{...payload.items[0],id:'invoice-description-0002-1',invoiceId:'invoice-description-0002',itemNote:55}]}).ok,false);
 });
+
+test('BOX quantities survive backend save, catalogue, draft recovery and versioned edits',()=>{
+ const backend=fixture(),{record}=create(backend,[item({billingUnit:'box',measurementMode:'quantity',quantity:'2.5',measurements:[],rate:'100'})]);
+ assert.equal(record.totalMinor,25000);assert.equal(quantityText(record.items[0]),'2.5 BOX');
+ assert.equal(backend.post('listAccounts',{}).catalogue[0].saleBillingUnit,'box');
+ const editing=invoiceDraftFromRecord(record),storage={getItem:()=>JSON.stringify(editing)};
+ assert.equal(readInvoiceDraft(storage,'test').draft.items[0].billingUnit,'box');
+ editing.items[0].quantity='3';const payload={...makeInvoice(editing,id),invoiceNumber:record.invoiceNumber,_expectedRevision:0,_editId:'edit-box-00000000000001'};
+ const result=backend.post('updateInvoice',payload);assert.equal(result.ok,true,result.error);assert.equal(result.record.totalMinor,30000);
+ assert.equal(backend.post('updateInvoice',payload).record.totalMinor,30000);
+ const grouped=makeInvoice(draft([item({billingUnit:'box',measurementMode:'quantity',rate:'100',measurements:[{...blankMeasurement(),quantity:'2',pieces:'3'},{...blankMeasurement(),quantity:'0.5',pieces:'2'}]})]),'invoice-box-group-000001');
+ assert.equal(grouped.totalMinor,70000);assert.equal(quantityText(grouped.items[0]),'7 BOX');
+});

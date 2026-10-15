@@ -534,3 +534,17 @@ The cutting workspace keeps a compact settings panel beside the plan on desktop.
 Choose **Tools → Laminate calculator**. Enter panel sizes and quantities (including mixed feet/inches/soot), choose one or both faces, and set the laminate sheet size. The live estimate adds a waste allowance (default 10%), rounds up to whole sheets by area, and optionally calculates whole-sheet cost from your price. Both faces assumes the same laminate on both sides. A panel breakdown and oversize-panel warnings help review the estimate. On mobile, Coverage & settings and Material estimate tabs keep the input form separate from the result.
 
 Sheet count is an area estimate, not a guaranteed cutting quantity: grain direction, arrangement, trimming and cutter loss can require additional sheets. Use Sheet cutting to check the layout. Costs exclude adhesive, labour and delivery. Download a self-contained HTML estimate or Print / Save PDF. Inputs remain when switching calculators or app sections during the page session. Calculations do not modify Google Sheets, invoices or stock.
+
+### Mobile invoice builder
+
+At phone widths, invoice creation and editing use a full-screen bill builder: **Customer → Items → Review**. Items appear as compact cards; tap Edit or Add item to open a bottom item editor. The existing catalogue, billing units, grouped measurements and price calculations are reused. Cost price and additional description are under More details. Done returns to the bill; Add & next starts another row. Back to bill or Escape retains the current row in the saved draft, including unfinished values that must be completed before review.
+
+The bottom bar keeps the bill total and the current action visible. Review includes invoice discount, round-off, notes and the existing payment controls; the final save action stays at the bottom. Entering Review does not issue the invoice. Draft recovery and background uploads use the existing storage and API. Desktop invoice entry and credit/debit note forms keep their existing layouts. This is a frontend change: no Code.gs update or Sheet migration is required.
+
+### Background invoice edits, BOX billing and ledger attachments
+
+Invoice edits are saved durably on the device before the editor closes. Uploads continue in the background; the edited document and balances preview the saved changes with a pending indicator. Retry failures from the saved-request controls. Rejected edits remove their preview and retain the original request for review/discard. Payments and historical stock movements remain unchanged until their respective operations.
+
+BOX is available as a quantity billing unit, including grouped quantities, catalogue prices, drafts and printed documents. Deploy `google-apps-script/Code.gs` version **1.28.0** through a new version of the existing Apps Script deployment, then refresh the app before saving BOX invoices. No Sheet migration is needed.
+
+Sharing a statement automatically prepares ledger pages with date, particulars, debit, credit and balance columns. **Share ledger** sends those images as attachments; download links provide a fallback. Detailed ledgers include invoice items.

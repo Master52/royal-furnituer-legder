@@ -34,7 +34,7 @@ export function readInvoiceDraft(storage,endpoint){
         if(savedItem[field]!=null&&!['string','number'].includes(typeof savedItem[field]))throw new Error('Invalid item field');
         if(savedItem[field]!=null)item[field]=String(savedItem[field]);
       }
-      if(!['','nos','sqft','rft','kg'].includes(item.billingUnit)||!['feet','inches',''].includes(item.measurementUnit)||!['quantity','dimensions','perimeter'].includes(item.measurementMode))throw new Error('Invalid measurement unit');
+      if(!['','nos','box','sqft','rft','kg'].includes(item.billingUnit)||!['feet','inches',''].includes(item.measurementUnit)||!['quantity','dimensions','perimeter'].includes(item.measurementMode))throw new Error('Invalid measurement unit');
       if(savedItem.measurements!=null){if(!Array.isArray(savedItem.measurements)||savedItem.measurements.length>100)throw new Error('Invalid measurements');item.measurements=savedItem.measurements.map(row=>{if(!row||typeof row!=='object')throw new Error('Invalid size row');return Object.fromEntries(['description','length','width','quantity','pieces'].map(key=>{const value=row[key]??(key==='pieces'||key==='quantity'?'1':'');if(!['string','number'].includes(typeof value))throw new Error('Invalid size field');return [key,String(value)];}));});}
       if(savedItem.grouped!=null&&typeof savedItem.grouped!=='boolean')throw new Error('Invalid grouping option');
       item.grouped=Boolean(savedItem.grouped||item.measurements.length>1||(!['sqft','rft'].includes(item.billingUnit)&&item.measurements.length>0));

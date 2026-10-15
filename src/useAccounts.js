@@ -205,11 +205,11 @@ export default function useAccounts(endpoint, enabled) {
       return false;
     }finally{working.current=false;setBusy(false);setUploadTick(value=>value+1);}
   }
-  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote'].includes(item.action));
+  const canQueue=enabled && Boolean(endpoint) && loaded && !rejected && !queue.some(item=>item.failure?.rejected) && queue.every(item=>item.endpoint===endpoint&&!item.invalid&&['createParty','createInvoice','createInvoiceNote','updateInvoice'].includes(item.action));
   async function enqueue(action,payload){
     if(!canQueue)return false;
     const operation={endpoint,action,payload};
-    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
+    try{serializeRequest(endpoint,payload,action);await updateQueue(items=>{if(items.some(item=>item.failure?.rejected||item.endpoint!==endpoint||!['createParty','createInvoice','createInvoiceNote','updateInvoice'].includes(item.action)))throw new Error('Resolve the saved request before adding another record.');return items.some(item=>operationKey(item)===operationKey(operation))?items:[...items,operation];});}
     catch(error){setError(error.message||'Browser storage is unavailable. The record was not queued.');return false;}
     if(!pending){setError('');setRejected(false);}
     return true;
@@ -272,7 +272,10 @@ export default function useAccounts(endpoint, enabled) {
   },[reload]);
   const queuedHere=useMemo(()=>queue.filter(item=>item.endpoint===endpoint&&!item.invalid),[queue,endpoint]);
   const parties=useMemo(()=>data.parties.filter(party=>!party.archivedAt),[data.parties]);
-  const invoices=useMemo(()=>data.invoices.filter(invoice=>invoice.status!=='deleted'),[data.invoices]);
+  const invoices=useMemo(()=>data.invoices.filter(invoice=>invoice.status!=='deleted').map(invoice=>{
+    const edit=queuedHere.find(item=>item.action==='updateInvoice'&&item.payload.id===invoice.id&&!item.failure?.rejected);
+    return edit?{...invoice,...edit.payload,_pending:true}:invoice;
+  }),[data.invoices,queuedHere]);
   const partyIds=useMemo(()=>new Set(data.parties.map(party=>party.id)),[data.parties]);
   const invoiceById=useMemo(()=>new Map(data.invoices.map(invoice=>[invoice.id,invoice])),[data.invoices]);
   const noteIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.id)),[data.notes]);
@@ -282,5 +285,5 @@ export default function useAccounts(endpoint, enabled) {
   const pendingNotes=useMemo(()=>queuedHere.filter(item=>item.action==='createInvoiceNote'&&!noteIds.has(item.payload.id)&&invoiceById.has(item.payload.invoiceId)&&invoiceById.get(item.payload.invoiceId).status!=='deleted').map(item=>{const invoice=invoiceById.get(item.payload.invoiceId);return {...item.payload,invoiceNumber:invoice?.invoiceNumber,partyId:invoice?.partyId,partyName:invoice?.partyName,partyPhone:invoice?.partyPhone,partyAddress:invoice?.partyAddress,invoiceType:invoice?.type,status:'pending',_pending:true,noteNumber:'Awaiting note number'};}),[queuedHere,noteIds,invoiceById]);
   const partyBalances=useMemo(()=>accountBalances(parties,invoices,data.transactions,notes),[parties,invoices,data.transactions,notes]);
   const notedInvoiceIds=useMemo(()=>new Set((data.notes||EMPTY_NOTES).map(note=>note.invoiceId)),[data.notes]);
-  return {...data,stockInvoices:data.invoices,catalogueWarning,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
+  return {...data,stockInvoices:data.invoices,catalogueWarning,notedInvoiceIds,parties,invoices,notes,pendingNotes,partyBalances,selectableParties,pendingInvoices,queue,canQueue,loaded,busy,refreshing,cached,error,pending,rejected,checkedAt,lastInvoice,reload,loadInvoiceDetails,refreshIfStale,save,queueDeletes,queueInvoiceEdit:payload=>enqueue('updateInvoice',payload),queueInvoice:payload=>enqueue('createInvoice',payload),queueParty:payload=>enqueue('createParty',payload),queueNote:payload=>enqueue('createInvoiceNote',payload),retry:()=>send(pending),discardRejected,correctRejectedParty};
 }
