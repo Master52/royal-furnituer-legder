@@ -1,6 +1,6 @@
-const CACHE = 'shop-ledger-shell-v6';
+const CACHE = 'shop-ledger-shell-v8';
 const BASE = new URL('./', self.registration.scope);
-const SHELL = [BASE.href, new URL('manifest.webmanifest', BASE).href, new URL('icons/royal-logo.png', BASE).href, new URL('icons/ledger-192-v2.png', BASE).href, new URL('icons/ledger-512-v2.png', BASE).href];
+const SHELL = [BASE.href, new URL('manifest.webmanifest', BASE).href, new URL('icons/royal-logo-v4.png', BASE).href, new URL('icons/ledger-192-v4.png', BASE).href, new URL('icons/ledger-512-v4.png', BASE).href];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));

@@ -548,3 +548,15 @@ Invoice edits are saved durably on the device before the editor closes. Uploads 
 BOX is available as a quantity billing unit, including grouped quantities, catalogue prices, drafts and printed documents. Deploy `google-apps-script/Code.gs` version **1.28.0** through a new version of the existing Apps Script deployment, then refresh the app before saving BOX invoices. No Sheet migration is needed.
 
 Sharing a statement automatically prepares ledger pages with date, particulars, debit, credit and balance columns. **Share ledger** sends those images as attachments; download links provide a fallback. Detailed ledgers include invoice items.
+
+### Royal Furnitures branding
+
+The app uses `logo/Royal Furnitures Architectural Logo.png` with an ivory, walnut and brass palette. `src/royalTheme.css` defines light/dark theme tokens and screen styles; financial status colours retain their meanings. Optimized logo and app icons are versioned `v4` under `public/icons`, with matching HTML, manifest and service-worker references. The report header uses the same logo. This branding update does not require an Apps Script deployment.
+
+### Transparent branding, theme selection and startup animation
+
+The shared transparent logo lives in `src/assets/royal-logo-transparent.png`; `src/brandAsset.js` embeds that asset for standalone HTML reports and canvas exports. `src/brand.js` supplies the same logo to navigation, settings, recovery, invoices, credit/debit notes, statements and workshop reports. Public browser/app icons use version `v4`; source artwork is preserved.
+
+Theme selection applies immediately and is remembered for this device under `rf.appearance`, including when changing Sheet connections. Other shop preferences still use Save preferences. Legacy neutral screen colours use the shared royal theme tokens, with original print-colour fallbacks. The startup logo appears centrally, then moves to the actual sidebar/mobile-header position after connection restoration. Reduced-motion preferences skip the movement.
+
+Validation: `npm test`, `npm run build`, `tests/browser/branding.mjs` and `tests/browser/tools.mjs` pass. The branding browser check covers immediate/saved themes, desktop and phone layouts, startup, reduced motion, transparent assets and canvas exports.

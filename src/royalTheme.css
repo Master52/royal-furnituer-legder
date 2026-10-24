@@ -1,0 +1,67 @@
+/* Royal Furnitures: ivory, walnut and brushed brass. Screen-only so documents
+   retain their existing print layout and financial status colours. */
+@media screen {
+  :root {
+    color-scheme:light;
+    --royal-canvas:#f7f3ec;
+    --royal-surface:#fffdf9;
+    --royal-soft:#f0e7d9;
+    --royal-ink:#352a22;
+    --royal-muted:#766859;
+    --royal-border:#dfd3c1;
+    --royal-accent:#795021;
+    --royal-accent-hover:#603b18;
+    --royal-on-accent:#fffaf1;
+    --royal-focus:#b27d35;
+    background:var(--royal-canvas);
+    color:var(--royal-ink);
+  }
+  :root[data-theme=dark] {
+    color-scheme:dark;
+    --royal-canvas:#1b1713;
+    --royal-surface:#27211b;
+    --royal-soft:#382e22;
+    --royal-ink:#f3eadc;
+    --royal-muted:#c5b59e;
+    --royal-border:#594833;
+    --royal-accent:#d8b477;
+    --royal-accent-hover:#ebcb94;
+    --royal-on-accent:#241b10;
+    --royal-focus:#dfb76f;
+  }
+  :root:root body {background:var(--royal-canvas);color:var(--royal-ink)}
+  :root:root :is(.empty,.current-balances,.method-total,.insight-metric,.insight-panel,.business-metrics article,.business-overview,.activity-section,.account-form,.party-overview,.invoice-register,.party-statement-workspace,.account-metrics article,.party-directory,.invoice-submit-bar,.invoice-dashboard-list,.invoice-party-options,.record-menu>div,.stock-metrics>div,.stock-workspace>section,.stock-savebar,.stock-pos-split>section,.stock-pos-suggestions,.stock-pos-options>div,.stock-pos-metrics details>div,.stock-table-wrap,.stock-table td:nth-child(2),.sidebar,.entry-card,.recent-panel,.summary-card,.category-card,.transactions,dialog,.mobile-nav,.entry-save,.invoice-dashboard,.party-list,.party-detail,.party-form,.invoice-form,.invoice-item-editor,.stock-panel,.stock-card,.cutting-settings,.cutting-results,.mobile-bill-footer,.mobile-bill-item,.mobile-item-sheet,.mobile-item-sheet-actions) {
+    background:var(--royal-surface);color:var(--royal-ink);border-color:var(--royal-border);
+  }
+  :root:root :is(input,select,textarea,.filters input,.filters select,.date-range input,.entry-amount input) {
+    background:var(--royal-surface);color:var(--royal-ink);border-color:var(--royal-border);accent-color:var(--royal-accent);
+  }
+  :root:root :is(.topbar,.sidebar-bottom,.table-footer,td,.setup-step,.recent-list li,.entry-save,.account-dialog-heading,.invoice-document-header,.invoice-grand-total,.invoice-section-content,.transaction-record-info,.mobile-bill-review,.mobile-item-sheet-heading,.mobile-bill-item-actions,.mobile-item-details) {border-color:var(--royal-border)}
+  :root:root :is(.primary,.net) {background:var(--royal-accent);color:var(--royal-on-accent);border-color:var(--royal-accent);box-shadow:0 4px 12px #50331012}
+  :root:root .primary:hover:not(:disabled) {background:var(--royal-accent-hover)}
+  :root:root .net :is(p,div) {color:var(--royal-on-accent)}
+  :root:root :is(.nav-item.active,.mobile-nav button.active,.settings-tabs button[aria-pressed=true],.method-picker .selected,.statement-format-options button[aria-pressed=true],.mobile-bill-steps button[aria-current=step]) {
+    background:var(--royal-soft);color:var(--royal-accent);border-color:var(--royal-focus);
+  }
+  :root:root :is(.outline,.entry-date button,.settings-link,.edit-transaction) {color:var(--royal-accent);border-color:var(--royal-border)}
+  :root:root :is(.outline,.nav-item,.invoice-open-row,.transaction-clickable,.transaction-list-toggle):hover:not(:disabled) {background:var(--royal-soft)}
+  :root:root :is(.segmented,.settings-tabs,.party-total,.transaction-detail-summary,.connection-details,.row-symbol,.mobile-bill-customer,.mobile-bill-add,.mobile-bill-steps button,.invoice-summary-panel,.measurement-total) {background:var(--royal-soft);color:var(--royal-ink);border-color:var(--royal-border)}
+  :root:root :is(th,kbd) {background:var(--royal-soft);color:var(--royal-muted);border-color:var(--royal-border)}
+  :root:root :is(.insight-metric>span,.insight-metric>small,.insight-panel p,.insight-footnote,.insight-comparison>span,.method-total>span,.method-total small,.category-cashflow,.help,.heading p:last-child,.summary-card p,.summary-card>div,.category-name small,.entry-date,.recent-empty,.recent-list small,.shortcut-help,.table-footer,td small,.connection-details dt,.form-footnote,.entry-save p,label>span,footer,.section-title>span,.field-caption,.eyebrow,.breadcrumb,.nav-label,.nav-item,.party-contact-details dt,.transaction-detail-fields dt,.transaction-detail-summary>small,.invoice-party>span,.mobile-bill-customer small,.mobile-bill-item-open small,.mobile-bill-footer small,.mobile-item-details summary,.startup-loading) {color:var(--royal-muted)}
+  :root:root :is(button,a,input,select,textarea):focus-visible {outline-color:var(--royal-focus)}
+  :root:root .brand {font-family:Georgia,'Times New Roman',serif;letter-spacing:.2px;line-height:1.2;color:var(--royal-ink)}
+  :root:root .brand-sub {font-family:'DM Sans',sans-serif;color:var(--royal-muted);font-size:9px;letter-spacing:2px;margin-top:7px}
+  :root:root .brand-logo {width:64px;height:64px;border-radius:10px;object-fit:contain;background:transparent}
+  :root:root .shop-icon {background:var(--royal-soft);color:var(--royal-accent);border:1px solid var(--royal-border)}
+  :root:root .app-invocation {color:var(--royal-muted)}
+  :root:root footer a {color:var(--royal-accent)}
+  :root:root .tools-page {--cut-surface:var(--royal-surface);--cut-border:var(--royal-border);--cut-muted:var(--royal-muted);--cut-ink:var(--royal-ink);--cut-soft:var(--royal-soft)}
+  :root:root :is(.tools-selector button,.cutting-mobile-switch,.cutting-live,.cutting-autosave) {background:var(--royal-soft);color:var(--royal-ink);border-color:var(--royal-border)}
+  :root:root :is(.tools-selector button[aria-pressed=true],.cutting-sheet-tabs button[aria-pressed=true]) {background:var(--royal-soft);color:var(--royal-accent);border-color:var(--royal-focus);box-shadow:inset 0 -2px var(--royal-focus)}
+  :root:root .chart-grid {stroke:var(--royal-border)}
+  :root:root :is(.chart-tick,.chart-month) {fill:var(--royal-muted)}
+  @media(max-width:760px) {
+    :root:root .brand-logo {width:42px;height:42px}
+    :root:root .mobile-item-overlay {background:#241b1466}
+  }
+}

@@ -1,3 +1,5 @@
+import StartupLogo from './StartupLogo.jsx';
+import {BRAND_LOGO} from './brand.js';
 import KeyboardShortcuts from './KeyboardShortcuts.jsx';
 import AccountDialog from './AccountDialog.jsx';
 import AccountsPanel from './AccountsPanel.jsx';
@@ -24,6 +26,7 @@ import './insights.css';
 import './settlement.css';
 import './outbox.css';
 import './accounts.css';
+import './royalTheme.css';
 import './indicators.css';
 import PaymentEntry from './PaymentEntry.jsx';
 import TransactionDetails from './TransactionDetails.jsx';
@@ -50,11 +53,11 @@ async function checkedSettlementSnapshot(request) {
 }
 function App() {
   const pendingKey = 'rf.pending';
-  const brandLogo = new URL('icons/royal-logo.png', document.baseURI).href;
+  const brandLogo = BRAND_LOGO;
   const [endpoint, setEndpoint] = useState(readEndpoint);
   const endpointRef=useRef(endpoint);
   endpointRef.current=endpoint;
-  const [preferences,setPreferences] = useState(()=>normalizePreferences(read(preferenceKey(endpoint), {})));
+  const [preferences,setPreferences] = useState(()=>normalizePreferences({...read(preferenceKey(endpoint), {}),...read('rf.appearance',{})}));
   const [deleted,setDeleted] = useState(null);
   const [settingsFeedback,setSettingsFeedback] = useState('');
   const [rows, setRows] = useState([]);
@@ -189,14 +192,14 @@ function App() {
     setInstallPrompt(null);
   }
   function applyConnectionPreferences(target) {
-    const next=normalizePreferences(read(preferenceKey(target),{}));
+    const next=normalizePreferences({...read(preferenceKey(target),{}),...read('rf.appearance',{})});
     setPreferences(next);setDeleted(null);setSettingsFeedback('');
     if (!hasDraft(form) && !editing && !pending) setForm(newEntry(entryDefaults(next)));
   }
   function savePreferences(values) {
     setError('');
     try {
-      const next=normalizePreferences(values);write(preferenceKey(endpoint),next);setPreferences(next);
+      const next=normalizePreferences(values);write(preferenceKey(endpoint),next);write('rf.appearance',{theme:next.theme});setPreferences(next);
       if (!hasDraft(form) && !editing && !pending) setForm(newEntry(entryDefaults(next)));
       setSettingsFeedback('Preferences saved for this connection in this browser.');
     } catch {setError('Preferences could not be saved. Check browser storage permissions.');}
@@ -324,7 +327,7 @@ function App() {
       setOutbox(outboxRef.current);
     }).finally(() => {outboxProcessing.current = false; setUploadTick(value => value + 1);});
   }, [outbox, endpoint, connectionRestored, busy, refreshing, uploadTick]);
-  useEffect(()=>{ document.documentElement.dataset.theme=preferences.theme; document.documentElement.dataset.textSize=preferences.largeText?'large':'normal'; document.documentElement.dataset.printNotes=String(preferences.printNotes); document.title=preferences.shopName+' | Shop Ledger'; const description=document.querySelector('meta[name="description"]'); if(description) description.content='Royal Furnitures — Apne Gar ko do ROYAL touch sirf Royal Furnitures se. Shop ledger for payments, purchases, transport and expenses.'; },[preferences]);
+  useEffect(()=>{ document.documentElement.dataset.theme=preferences.theme; document.documentElement.style.colorScheme=preferences.theme; const themeColor=document.querySelector('meta[name="theme-color"]'); if(themeColor)themeColor.content=preferences.theme==='dark'?'#1b1713':'#795021'; document.documentElement.dataset.textSize=preferences.largeText?'large':'normal'; document.documentElement.dataset.printNotes=String(preferences.printNotes); document.title=preferences.shopName+' | Shop Ledger'; const description=document.querySelector('meta[name="description"]'); if(description) description.content='Royal Furnitures — Apne Gar ko do ROYAL touch sirf Royal Furnitures se. Shop ledger for payments, purchases, transport and expenses.'; },[preferences]);
   useEffect(() => {
     // The startup screen does not mount the dialog until restoration finishes.
     if (!connectionRestored || !dialog.current) return;
@@ -533,10 +536,11 @@ function App() {
   }
   const update = (key,value) => setForm(previous=>key==='fullFinal'?{...previous,fullFinal:value,...(value?{direction:'in',category:'Sale'}:{})}:{...previous,...(['partyId','direction'].includes(key)?{fullFinal:false}:{}),[key]:value});
   const invocation=<div className="app-invocation" lang="ar" dir="rtl">بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ</div>;
-  if (!connectionRestored) return <>{invocation}<main className="startup-loading" role="status">Restoring your saved Google Sheets connection…</main></>;
+  if (!connectionRestored) return <><StartupLogo ready={false}/>{invocation}<main className="startup-loading" role="status">Restoring your saved Google Sheets connection…</main></>;
   return <>
+    <StartupLogo ready={connectionRestored}/>
     {invocation}
-    <aside className="sidebar"><div className="brand-invocation" lang="ar" dir="rtl">یاحسین</div><a className="brand" href="#"><img className="brand-logo" src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon">RF</div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
+    <aside className="sidebar"><div className="brand-invocation" lang="ar" dir="rtl">یاحسین</div><a className="brand" href="#"><img className="brand-logo" data-brand-home src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon"><img src={brandLogo} alt=""/></div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
     <main><header className="topbar"><KeyboardShortcuts onNavigate={setView} onSettings={openSettings} onSearch={()=>{setView('history');setTimeout(()=>focusAndCenter(document.querySelector('.activity-filters input[type=search]')),0);}}/><button className="outline" onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>⚙ Settings</button>{installPrompt && <button className="outline install-button" onClick={installApp}>＋ Install app</button>}<SyncStatus endpoint={endpoint} accounts={accounts} stock={stock} outbox={outbox} synced={synced} refreshing={refreshing} readError={refreshReadError||(error&&!modal?error:'')} cacheSavedAt={cacheSavedAt} accountsEnabled={accountsEnabled} stockEnabled={stockEnabled} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')} onReviewStock={()=>setView('stock')} onConnect={openSettings}/></header>
       {(view==='history'||view==='dashboard')&&<section className="heading dashboard-heading"><div><h1>{view==='history'?'History':'Dashboard'}</h1></div>{<div className="dashboard-actions"><button data-hotkey="alt+n" aria-keyshortcuts="Alt+N" data-hotkey-label="Record payment" className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button data-hotkey="alt+i" aria-keyshortcuts="Alt+I" data-hotkey-label="New invoice / note" className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ New Invoice / Note <kbd>Alt + I</kbd></button><button type="button" data-hotkey="alt+u" aria-keyshortcuts="Alt+U" className="outline" disabled={!stockEnabled||!stock.openingDate||stock.pending?.failed||stock.pending?.invalid} onClick={()=>setManualStockOpen(true)}>Stock Update <kbd>Alt + U</kbd></button><button data-hotkey="alt+d" aria-keyshortcuts="Alt+D" data-hotkey-label="Resume invoice draft" className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
       {!endpoint && <div className="setup-banner"><div><strong>Let’s connect your ledger.</strong><span>Connect Google Sheets to start recording payments.</span></div><button onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>Connect Sheets ↗</button></div>}
@@ -562,13 +566,16 @@ function App() {
       {view==='dashboard'&&<DashboardOverview stock={stock} onStock={()=>setView('stock')} onCategory={name=>{setHistoryCategory(name);setMethod('');setQuery('');setView('history');}} accounts={accounts} transactions={confirmedTransactions} range={range} period={period} onParty={openInsightParty} cash={expectedCash} online={expectedOnline}/>}
       {view==='history'&&<section className="history-controls"><div className="history-category-tabs" role="group" aria-label="Transaction category">{['',...categories].map((value,index)=><button data-hotkey={`alt+${index+1}`} aria-keyshortcuts={`Alt+${index+1}`} data-hotkey-label={`${value||'All'} history`} key={value||'all'} data-tone={value==='Sale'?'sale':value==='Purchase'?'purchase':undefined} type="button" className={historyCategory===value?'active':''} aria-pressed={historyCategory===value} onClick={()=>setHistoryCategory(value)}>{value||'All'}</button>)}</div><div className="activity-filters"><input type="search" aria-label="Search history" placeholder="Search party, reference, challan, item or notes…" value={query} onChange={e=>setQuery(e.target.value)}/><select data-hotkey="alt+m" aria-keyshortcuts="Alt+M" aria-label="Filter payment method" value={method} onChange={e=>setMethod(e.target.value)}><option value="">All payment methods</option>{methods.map(value=><option key={value} value={value}>{value==='Split'?'Cash + Online':value}</option>)}<option value="Transfer">Cash/Online exchange</option><option value="Adjustment">Cashflow adjustment</option></select><button data-hotkey="alt+p" aria-keyshortcuts="Alt+P" type="button" className="outline" onClick={()=>window.print()}>Print history</button></div></section>}
       <ActivityTable key={view} accounts={accounts} transactions={rows} outbox={outbox} range={range} category={view==='history'?historyCategory:''} method={view==='history'?method:''} query={view==='history'?query:''} history={view==='history'} printing={printingTransactions} editingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.9.0')} deletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.11.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.12.0')} bulkDeleteEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.0')&&!outbox.length} onBulkDelete={bulkDelete} paymentBusy={busy||!endpoint||!!accounts.pending} onOpen={row=>openActivity(row)} onEdit={row=>openActivity(row,'edit')} onDelete={row=>openActivity(row,'delete')} onPrint={row=>openActivity(row,'print')} onHistory={()=>{setHistoryCategory('');setView('history');}}/>
-      </div><footer>{preferences.shopName}<a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
+      </div><footer><span className="footer-brand"><img src={brandLogo} alt=""/>{preferences.shopName}</span><a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
     </main>
     <nav className="mobile-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" onClick={openSettings}><span>⚙</span>Settings</button></nav>
-    <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} aria-labelledby="settings-title" onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><p className="eyebrow">SHOP LEDGER</p><h2 id="settings-title">Settings & sheet setup</h2></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
+    <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} aria-labelledby="settings-title" onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><div className="settings-brand"><img src={brandLogo} alt=""/><div><p className="eyebrow">SHOP LEDGER</p><h2 id="settings-title">Settings & sheet setup</h2></div></div></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
       {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings accessRequest={accessRecovery} onAccessVerified={destination=>{if(accessRecovery?.endpoint===destination){setModal(accessRecovery.previousModal||'');setAccessRecovery(null);}}} preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy||stock.busy} pending={pending||accounts.pending||stock.pending} openTweak={openTweak}/></Suspense>}
 
     </dialog>
   </>;
 }
+const startupTheme=read('rf.appearance',{}).theme||read(preferenceKey(readEndpoint()),{}).theme||'light';
+document.documentElement.dataset.theme=startupTheme==='dark'?'dark':'light';
+document.documentElement.style.colorScheme=document.documentElement.dataset.theme;
 createRoot(document.getElementById('root')).render(<AppErrorBoundary><App/></AppErrorBoundary>);

@@ -1,3 +1,4 @@
+import {BRAND_LOGO} from './brand.js';
 import MeasurementBreakdown from './MeasurementBreakdown.jsx';
 import {quantityText,BILLING_UNITS} from './measurements.js';
 import React, {useState} from 'react';
@@ -13,7 +14,7 @@ export default function InvoiceDocument({ invoice, preferences, profitControls=f
   const payment=paymentsConfirmed?transactions.find(row=>row.id===invoice.paymentId&&row.invoiceId===invoice.id&&!row.deletedAt&&!duplicates.has(row.id)&&!transactionIntegrityIssue(row)):null;
   const pending=payment?profit.netValue-Number(payment.amountMinor):null;
   return <section className="invoice-document">
-    <header className="invoice-document-header"><div><h1>{preferences.shopName}</h1>{preferences.printContact && <p>{preferences.address}<br/>{preferences.phone}</p>}</div><div><h2>{invoice.type === 'sale' ? 'Sales invoice' : 'Purchase invoice'}</h2><strong>{invoice.invoiceNumber}</strong><p>Date: {invoice.invoiceDate}</p>{invoice.challanNumber&&<p>Challan No.: {invoice.challanNumber}</p>}</div></header>
+    <header className="invoice-document-header"><div><img className="document-brand-logo" src={BRAND_LOGO} alt=""/><h1>{preferences.shopName}</h1>{preferences.printContact && <p>{preferences.address}<br/>{preferences.phone}</p>}</div><div><h2>{invoice.type === 'sale' ? 'Sales invoice' : 'Purchase invoice'}</h2><strong>{invoice.invoiceNumber}</strong><p>Date: {invoice.invoiceDate}</p>{invoice.challanNumber&&<p>Challan No.: {invoice.challanNumber}</p>}</div></header>
     {invoice.status === 'cancelled' && <div className="invoice-cancelled"><strong>CANCELLED</strong><p>{invoice.cancelReason}</p></div>}
     <section className="invoice-party"><span>{invoice.type === 'sale' ? 'Bill to' : 'Supplier'}</span><h3>{invoice.partyName}</h3>{invoice.partyPhone && <p>{invoice.partyPhone}</p>}{invoice.partyAddress && <p>{invoice.partyAddress}</p>}</section>
     <div className="invoice-document-table"><table><thead><tr><th>Item</th><th>Quantity</th><th>Rate</th>{legacyDiscount>0&&<th>Existing discount</th>}<th>Total</th></tr></thead><tbody>{invoice.items.map(item => <tr key={item.id}><td>{item.description}{item.itemNote&&<small className="invoice-item-note">{item.itemNote}</small>}<MeasurementBreakdown item={item}/></td><td>{quantityText(item)}</td><td>{money(item.rateMinor)}{item.billingUnit&&<small>per {BILLING_UNITS[item.billingUnit]}</small>}</td>{legacyDiscount>0&&<td>{money(item.discountMinor)}</td>}<td>{money(item.lineTotalMinor)}</td></tr>)}</tbody></table></div>

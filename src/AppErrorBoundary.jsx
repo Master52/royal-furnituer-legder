@@ -1,3 +1,4 @@
+import {BRAND_LOGO} from './brand.js';
 import React from 'react';
 import { downloadText } from './preferences.js';
 
@@ -12,6 +13,6 @@ export default class AppErrorBoundary extends React.Component {
   };
   render() {
     if (!this.state.error) return this.props.children;
-    return <section className="app-recovery" role="alert"><h1>The app could not open</h1><p>{this.state.error.message}</p><p>Your saved records have not been deleted.</p><button className="primary" onClick={this.exportRecoveryData}>Export recovery data</button> <button className="outline" onClick={() => window.location.reload()}>Reload</button>{this.state.exportError && <p>{this.state.exportError}</p>}</section>;
+    return <section className="app-recovery" role="alert"><img className="document-brand-logo" src={BRAND_LOGO} alt="Royal Furnitures"/><h1>The app could not open</h1><p>{this.state.error.message}</p><p>Your saved records have not been deleted.</p><button className="primary" onClick={this.exportRecoveryData}>Export recovery data</button> <button className="outline" onClick={() => window.location.reload()}>Reload</button>{this.state.exportError && <p>{this.state.exportError}</p>}</section>;
   }
 }
