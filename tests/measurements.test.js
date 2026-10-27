@@ -157,3 +157,33 @@ test('BOX quantities survive backend save, catalogue, draft recovery and version
  const grouped=makeInvoice(draft([item({billingUnit:'box',measurementMode:'quantity',rate:'100',measurements:[{...blankMeasurement(),quantity:'2',pieces:'3'},{...blankMeasurement(),quantity:'0.5',pieces:'2'}]})]),'invoice-box-group-000001');
  assert.equal(grouped.totalMinor,70000);assert.equal(quantityText(grouped.items[0]),'7 BOX');
 });
+
+test('KG groups deduct return weights and survive backend save, reload and editing',async()=>{
+ const {measurementText}=await import('../src/measurements.js');
+ const kg=item({description:'WEIGHT',billingUnit:'kg',measurementMode:'quantity',measurements:[{...blankMeasurement(),quantity:'3'},{...blankMeasurement(),quantity:'-1.2'}],rate:'100',cost:'60'});
+ const payload=makeInvoice(draft([kg]),id),backend=fixture();
+ assert.equal(payload.items[0].quantityMilli,1800);assert.equal(payload.totalMinor,18000);assert.equal(payload.costTotalMinor,10800);
+ assert.match(measurementText(payload.items[0],payload.items[0].measurements[0]),/\+3 KG/);assert.match(measurementText(payload.items[0],payload.items[0].measurements[1]),/-1.2 KG/);
+ const saved=backend.post('createInvoice',payload);assert.equal(saved.ok,true,saved.error);
+ const loaded=backend.post('getInvoices',{ids:[id]});assert.equal(loaded.ok,true,loaded.error);
+ const record=loaded.invoices[0];assert.equal(record.items[0].measurements[1].quantityMilli,-1200);
+ const restored=invoiceDraftFromRecord(record);assert.equal(restored.items[0].measurements[1].quantity,'-1.2');assert.equal(makeInvoice(restored,id).totalMinor,18000);
+ for(const weight of ['-3','-4','0','-0.0001'])assert.throws(()=>makeInvoice(draft([{...kg,measurements:[kg.measurements[0],{...blankMeasurement(),quantity:weight}]}]),id));
+ for(const unit of ['nos','box'])assert.throws(()=>makeInvoice(draft([{...kg,billingUnit:unit}]),id));
+ const invalid=structuredClone(payload);invalid.items[0].billingUnit='nos';assert.equal(backend.post('createInvoice',{...invalid,id:'invalid-weight-invoice001'}).ok,false);
+});
+
+test('KG validation explains the net group weight including Pieces without rejecting valid returns',()=>{
+ const kg=(weights)=>item({description:'METAL',billingUnit:'kg',measurementMode:'quantity',measurements:weights.map(([quantity,pieces='1'])=>({...blankMeasurement(),quantity,pieces})),rate:'100',cost:'60'});
+ for(const weights of [[['3'],['-1.2']],[['-1.2'],['3']],[['3'],['-0.6','2']]]){
+  const payload=makeInvoice(draft([kg(weights)]),id),backend=fixture(),saved=backend.post('createInvoice',payload);
+  assert.equal(payload.items[0].quantityMilli,1800);assert.equal(payload.totalMinor,18000);assert.equal(saved.ok,true,saved.error);
+ }
+ for(const [weights,net] of [[[['3'],['-3']],'0'],[[['3'],['-1.2','3']],'-0.6'],[[['-1.2']],'-1.2']]){
+  const value=kg(weights);assert.throws(()=>makeInvoice(draft([value]),id),error=>error.message.includes('Item 1 (METAL)')&&error.message.includes(`totals ${net} kg`)&&error.message.includes('weight × Pieces'));
+  const backend=fixture(),valid=makeInvoice(draft([kg([['3'],['-1.2']])]),id);
+  valid.items[0].measurements=value.measurements.map(row=>({description:'',lengthMilli:0,widthMilli:0,quantityMilli:Math.round(Number(row.quantity)*1000),pieces:Number(row.pieces)}));valid.items[0].measurementCount=valid.items[0].measurements.length;
+  const rejected=backend.post('createInvoice',valid);assert.equal(rejected.ok,false);assert.ok(rejected.error.includes(`totals ${net} kg`),rejected.error);
+ }
+ assert.throws(()=>billingPreview(kg([['1000000','2']])),/totals 2000000 kg.*must not exceed/);
+});

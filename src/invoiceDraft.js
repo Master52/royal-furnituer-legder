@@ -3,7 +3,7 @@ import {blankMeasurement} from './measurements.js';
 
 export const invoiceDraftKey=endpoint=>`rf.invoiceDraft.${endpoint}`;
 export function hasInvoiceDraft(draft){
-  return Boolean(draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.walkIn||draft.paymentWithInvoice||draft.autoRoundOff||Number(draft.discount||0)!==0||draft.items.some(item=>item.description.trim()||item.itemNote?.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0||Boolean(item.billingUnit&&item.billingUnit!=='nos')||Boolean(item.measurements?.length)));
+  return Boolean(draft.amountOnly||draft.purchaseAmount||draft.sourceChallanId||draft.partyId||draft.partyQuery?.trim()||draft.notes?.trim()||draft.challanNumber?.trim()||draft.type==='purchase'||draft.walkIn||draft.paymentWithInvoice||draft.autoRoundOff||Number(draft.discount||0)!==0||draft.items.some(item=>item.description.trim()||item.itemNote?.trim()||item.rate!==''||item.cost!==''||item.quantity!=='1'||item.discount!==''&&Number(item.discount)!==0||Boolean(item.billingUnit&&item.billingUnit!=='nos')||Boolean(item.measurements?.length)));
 }
 export function readInvoiceDraft(storage,endpoint){
   const key=invoiceDraftKey(endpoint);
@@ -14,12 +14,15 @@ export function readInvoiceDraft(storage,endpoint){
     const saved=JSON.parse(raw);
     if(!saved||typeof saved!=='object'||!Array.isArray(saved.items)||saved.items.length<1||saved.items.length>50)throw new Error('Invalid draft');
     const draft=blankInvoice();
-    for(const field of ['partyId','partyQuery','type','invoiceDate','challanNumber','notes','discountMode','discount','paymentId']){
+    for(const field of ['partyId','partyQuery','type','invoiceDate','challanNumber','notes','discountMode','discount','paymentId','purchaseAmount','sourceChallanId']){
       if(saved[field]!=null&&typeof saved[field]!=='string')throw new Error('Invalid draft field');
       if(saved[field]!=null)draft[field]=saved[field];
     }
     if(saved.walkIn!=null&&typeof saved.walkIn!=='boolean')throw new Error('Invalid walk-in option');
     draft.walkIn=Boolean(saved.walkIn);
+    if(saved.amountOnly!=null&&typeof saved.amountOnly!=='boolean')throw new Error('Invalid amount-only option');
+    draft.amountOnly=Boolean(saved.amountOnly);
+    if(draft.amountOnly&&draft.type!=='purchase')throw new Error('Amount-only entries must be purchases');
     if(saved.paymentWithInvoice!=null&&typeof saved.paymentWithInvoice!=='boolean')throw new Error('Invalid invoice payment option');
     draft.paymentWithInvoice=Boolean(saved.paymentWithInvoice);
     if(saved.autoRoundOff!=null&&typeof saved.autoRoundOff!=='boolean')throw new Error('Invalid round-off option');

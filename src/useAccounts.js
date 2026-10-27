@@ -185,7 +185,7 @@ export default function useAccounts(endpoint, enabled) {
           if(!applyRecord('create',result.transaction)){const refreshed=await reload({fresh:true});if(!refreshed?.transactions.some(row=>row.id===operation.payload.paymentId))throw new Error('Retry to confirm the linked invoice payment.');}
         }
         if(Array.isArray(result.catalogue)){const current=snapshotRef.current;const next={...current,data:{...current.data,catalogue:result.catalogue}};lastAppliedRead.current++;snapshotRef.current=next;setSnapshot(next);saveAccountCache(endpoint,next.data,next.savedAt).catch(()=>{});}
-        setCatalogueWarning(result.catalogueWarning||'');
+        setCatalogueWarning([result.catalogueWarning,result.challanWarning].filter(Boolean).join(' '));
         if(operation.action==='deleteInvoice')setLastInvoice(previous=>previous?.id===record.id?null:previous);
         if(operation.action==='createInvoice')setLastInvoice({id:record.id,number:record.invoiceNumber});
         await updateQueue(items=>items.filter(item=>operationKey(item)!==operationKey(operation)));

@@ -1,3 +1,4 @@
+import {randomUUID} from './uuid.js';
 import {applyConfirmedStockUnits} from './stockImportProfile.js';
 export const STOCK_UNITS=['UNIT','NOS','PCS','SHEET','BOX','PACKET','BORI','BUNDLE','KG','GRAM','RFT','SQFT','METER','ROLL','SET'];
 export const stockUnitLabel=unit=>unit==='UNIT'?'CSV unit':unit;
@@ -51,7 +52,7 @@ export function parseStockCsv(text){
   if(index<0)throw new Error('Choose the MyBillBook CSV with Item ID and Current stock columns.');
   const headers=rows[index].map(v=>v.split('\n')[0].trim()),get=(r,key)=>r[headers.indexOf(key)]??'';
   for(const key of ['Item ID','Item Name*','Current stock','Sales Price','Purchase Price'])if(!headers.includes(key))throw new Error(`Missing CSV column: ${key}.`);
-  const result=rows.slice(index+1).filter(r=>get(r,'Item ID').trim()).map(r=>({id:crypto.randomUUID(),sourceId:get(r,'Item ID').trim(),name:get(r,'Item Name*').trim().toUpperCase(),code:get(r,'Item code').trim(),quantity:get(r,'Current stock').trim(),salePrice:get(r,'Sales Price').trim(),purchasePrice:get(r,'Purchase Price').trim(),lowStock:get(r,'Low stock alert quantity').trim(),baseUnit:'',importUnit:'',secondaryUnit:'',conversion:'',saleRateUnit:'',purchaseRateUnit:'',include:get(r,'Item Name*').trim().toUpperCase()!=='GENERIC SALE'}));
+  const result=rows.slice(index+1).filter(r=>get(r,'Item ID').trim()).map(r=>({id:randomUUID(),sourceId:get(r,'Item ID').trim(),name:get(r,'Item Name*').trim().toUpperCase(),code:get(r,'Item code').trim(),quantity:get(r,'Current stock').trim(),salePrice:get(r,'Sales Price').trim(),purchasePrice:get(r,'Purchase Price').trim(),lowStock:get(r,'Low stock alert quantity').trim(),baseUnit:'',importUnit:'',secondaryUnit:'',conversion:'',saleRateUnit:'',purchaseRateUnit:'',include:get(r,'Item Name*').trim().toUpperCase()!=='GENERIC SALE'}));
   if(!result.length||result.length>500)throw new Error('Import between 1 and 500 items at a time.');
   if(new Set(result.map(r=>r.sourceId)).size!==result.length)throw new Error('CSV contains duplicate Item IDs.');return result.map(row=>applyConfirmedStockUnits({...row,exportSnapshot:{name:row.name,code:row.code,quantity:row.quantity,lowStock:row.lowStock,salePrice:row.salePrice,purchasePrice:row.purchasePrice}}));
 }
@@ -62,6 +63,7 @@ export function invoiceStockEntries(invoice,stock){
  return [...totals].filter(([,amount])=>amount!==0n).map(([stockItemId,amount])=>{const item=[...stock.items,...(stock.archivedItems||[])].find(item=>item.id===stockItemId);return {stockItemId,quantity:stockText(amount<0n?-amount:amount),unit:item?.baseUnit,baseQuantity:stockText(amount)};});
 }
 export function stockInvoiceStatus(invoice,reviews,operations){
+ if(invoice.amountOnly&&!invoiceStockOperations(invoice,operations).length)return 'No stock impact';
  const affected=invoiceStockOperations(invoice,operations);
  if(affected.some(op=>!stockReviewMatches(op,invoice))||affected.length&&invoice.status!=='issued')return 'Needs review';
  const ids=new Set(affected.map(op=>op.id));const current=reviews.filter(row=>row.invoiceId===invoice.id&&(ids.has(row.operationId)||!affected.length&&Number(row.invoiceRevision)===Number(invoice.revision||0)));
@@ -93,14 +95,44 @@ export function stockActivity(items,movements,operations,invoices,today){
  return {fast,slow,counts,since};
 }
 
+// Validate saved queue structure before optimistic projections touch nested fields.
+export function parseStockQueue(text){
+ const value=JSON.parse(text||'null'),rows=value?.queue??(value?[value]:[]);
+ const actions=new Set(['importStock','createStockItem','updateStockItem','bulkUpdateStockItems','deleteStockItems','recordStock','reviewInvoiceStock','adjustInvoiceStock','reverseStock']);
+ const invalid=()=>{throw new Error('The saved stock queue is invalid. Its original data has been preserved.');},ids=new Set();
+ if(!Array.isArray(rows))invalid();
+ for(const row of rows){
+  const p=row?.payload;
+  if(!actions.has(row?.action)||typeof p?.id!=='string'||!p.id||ids.has(p.id))invalid();
+  ids.add(p.id);
+  if(['createStockItem','updateStockItem'].includes(row.action)&&(!p.item||typeof p.item.id!=='string'||typeof p.item.name!=='string'))invalid();
+  for(const key of ['movements','entries','priceUpdates','reviewItemIds','supersedesIds','items','targets'])if(p[key]!==undefined&&!Array.isArray(p[key]))invalid();
+  const projected=row.action==='adjustInvoiceStock'&&!p.stockUnchanged||row.action==='reviewInvoiceStock'&&p.reviewMode==='invoice';
+  if(projected&&!Array.isArray(p.movements))invalid();
+  if(p.movements){
+   if(p.movements.length>100)invalid();
+   for(const movement of p.movements){
+    if(typeof movement?.stockItemId!=='string'||typeof movement.unit!=='string')invalid();
+    try{stockDecimal(movement.quantity,{signed:true});}catch{invalid();}
+   }
+  }
+  if(p.priceUpdates?.some(price=>!price||typeof price.stockItemId!=='string')||p.reviewItemIds?.some(id=>typeof id!=='string'))invalid();
+ }
+ return rows.map(row=>row.rejected?{...row,failed:true}:row);
+}
+
 export function applyPendingStock(data,queue){
  const items=data.items.map(row=>({...row})),byId=new Map(items.map(row=>[row.id,row])),operations=data.operations.map(op=>({...op})),movements=[...data.movements],reviews=[...data.reviews],committed=new Set(operations.map(row=>row.id));
  for(const operation of queue){if(operation.invalid||operation.rejected)break;const p=operation.payload;if(committed.has(p.id))continue;
+  if(operation.action==='createStockItem'){
+   if(!byId.has(p.item.id)){const item={...p.item,balance:'0',revision:0,status:'active',_pending:true};items.push(item);byId.set(item.id,item);}
+   operations.push({id:p.id,kind:'item-create',_pending:true});continue;
+  }
   if(operation.action==='updateStockItem'){
    const item=byId.get(p.item?.id);
    if(!item||item.status==='deleted'||!Number.isSafeInteger(p._expectedRevision)||Number(item.revision||0)!==p._expectedRevision)continue;
    const createdAt=operation.queuedAt||new Date().toISOString();
-   for(const key of ['name','code','category','baseUnit','secondaryUnit','conversion','lowStock','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit']){
+   for(const key of ['name','code','category','baseUnit','secondaryUnit','conversion','lowStock','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','displayUnit']){
     if(Object.hasOwn(p.item,key)){if((key==='saleRateMinor'||key==='saleRateUnit')&&item[key]!==p.item[key])item.salePriceUpdatedAt=createdAt;if((key==='purchaseRateMinor'||key==='purchaseRateUnit')&&item[key]!==p.item[key])item.purchasePriceUpdatedAt=createdAt;item[key]=p.item[key];}
    }
    item.revision=p._expectedRevision+1;item.updatedAt=createdAt;item._pending=true;
@@ -123,4 +155,15 @@ export function applyPendingStock(data,queue){
   for(const price of p.priceUpdates||[]){const item=byId.get(price.stockItemId);if(!item)continue;for(const key of ['saleRateMinor','purchaseRateMinor'])if(price[key]!==undefined){item[key]=price[key];item[key==='saleRateMinor'?'salePriceUpdatedAt':'purchasePriceUpdatedAt']=createdAt;}item.revision=Number(item.revision||0)+1;}
  }
  return {...data,items,movements,reviews,operations};
+}
+
+// Round converted display quantities to eight decimal places; retain exact base stock.
+export function stockDisplay(item){
+ const unit=item.displayUnit===item.secondaryUnit&&item.secondaryUnit?item.secondaryUnit:item.baseUnit;
+ if(unit===item.baseUnit)return {unit,quantity:item.balance};
+ const balance=stockDecimal(item.balance,{signed:true}),factor=stockDecimal(item.conversion);
+ if(factor<=0n)return {unit:item.baseUnit,quantity:item.balance};
+ const magnitude=(balance<0n?-balance:balance)*STOCK_SCALE;
+ const rounded=(magnitude+factor/2n)/factor;
+ return {unit,quantity:(magnitude%factor?'≈ ':'')+stockText(balance<0n?-rounded:rounded)};
 }

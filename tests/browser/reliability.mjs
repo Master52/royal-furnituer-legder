@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 // Uses the existing Playwright installation and simulated Sheets only.
 import assert from 'node:assert/strict';
 import {accountBackend,TEST_ACCESS_TOKEN} from '../helpers/accountBackend.js';
@@ -40,7 +41,7 @@ await context.route('https://script.google.com/**',async route=>{
   }
   await route.fulfill({json:result});
 });
-const page=await context.newPage();page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
 try{
   await page.goto(appUrl);
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('rf.outbox'))[0]?._errorCode==='UNAUTHORIZED');
@@ -59,7 +60,7 @@ try{
   assert.ok(!JSON.stringify(await page.evaluate(()=>({...localStorage}))).includes(TEST_ACCESS_TOKEN));
   await settings.waitFor({state:'hidden'});
   await context.addInitScript(({endpoint,token})=>sessionStorage.setItem(`rf.access-token:${endpoint}`,token),{endpoint,token:TEST_ACCESS_TOKEN});
-  const other=await context.newPage();other.setDefaultTimeout(10000);other.on('pageerror',error=>errors.push(error.message));other.on('dialog',dialog=>dialog.accept());
+  const other=await context.newPage();await acceptActionDialogs(other,{});other.setDefaultTimeout(10000);other.on('pageerror',error=>errors.push(error.message));other.on('dialog',dialog=>dialog.accept());
   await other.goto(appUrl);
   await other.locator('.dashboard-actions').getByRole('button',{name:/Record Payment/}).waitFor();
   let release;

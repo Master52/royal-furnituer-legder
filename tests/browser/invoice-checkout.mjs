@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {accountBackend,TEST_ACCESS_TOKEN} from '../helpers/accountBackend.js';
@@ -21,9 +22,9 @@ await context.route('https://script.google.com/**',async route=>{
  if(loseReply&&action==='createInvoice'){loseReply=false;await route.abort('failed');return;}
  await route.fulfill({json:result});
 });
-const page=await context.newPage();page.setDefaultTimeout(7000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(7000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
 const form=()=>page.locator('.invoice-form');
-const dialog=()=>page.locator('dialog[open]');
+const dialog=()=>page.locator('dialog[open]:not(.action-dialog)');
 const close=()=>dialog().getByRole('button',{name:'Close popup'}).click();
 async function openNew(){await page.locator('.dashboard-actions').getByRole('button',{name:/New Invoice \/ Note/}).click();await page.locator('.account-invoice-dialog').waitFor();}
 async function enterItem(name='WINDOW',rate='1000',cost='600'){const mobile=await page.locator('.mobile-invoice-builder').count();if(mobile){await form().getByRole('button',{name:'Continue →',exact:true}).click();await form().getByRole('button',{name:'＋ Add item',exact:true}).click();}await form().getByLabel('Item 1 description',{exact:true}).fill(name);await form().getByLabel('Rate (₹)',{exact:true}).fill(rate);if(mobile)await form().getByText('More details · cost & description',{exact:true}).click();await form().getByLabel('Cost price (₹)',{exact:true}).fill(cost);if(mobile){await form().getByRole('button',{name:'Done',exact:true}).click();await form().getByRole('button',{name:'Review bill →',exact:true}).click();}}

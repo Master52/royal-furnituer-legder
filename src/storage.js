@@ -103,3 +103,23 @@ export async function loadStockCache(endpoint){
 export async function saveStockCache(endpoint,data,savedAt=new Date().toISOString()){
  if(!endpoint)return;await indexedDbRequest('readwrite',store=>store.put({data,savedAt},STOCK_CACHE_PREFIX+endpoint));
 }
+
+const CHALLAN_QUEUE_PREFIX='rf.challan-queue:';
+// Recovery exports must preserve malformed queue entries too.
+export function loadChallanRecovery(endpoint){
+  return indexedDbRequest('readonly',store=>store.get(CHALLAN_QUEUE_PREFIX+endpoint));
+}
+export async function loadChallanQueue(endpoint){
+  const rows=await loadChallanRecovery(endpoint);
+  if(rows==null)return [];
+  if(!Array.isArray(rows)||rows.some(row=>!row?.payload?.id||typeof row.key!=='string'||!row.key||!['createChallan','uploadChallanPhoto','updateChallanRetention','deleteChallanPhotos'].includes(row.action)))throw new Error('The saved challan upload queue needs recovery. Its data has been preserved.');
+  return rows;
+}
+export async function mutateChallanQueue(endpoint,change){
+  if(!globalThis.navigator?.locks)throw new Error(globalThis.isSecureContext===false?'Open the app over HTTPS, or use localhost on this computer, to safely save challan photos. Plain HTTP network addresses cannot use Web Locks.':'Use an updated browser with Web Locks enabled to safely save challan photos.');
+  return navigator.locks.request('rf.challan-queue:'+endpoint,async()=>{
+    const next=change(await loadChallanQueue(endpoint));
+    await indexedDbRequest('readwrite',store=>store.put(next,CHALLAN_QUEUE_PREFIX+endpoint));
+    return next;
+  });
+}

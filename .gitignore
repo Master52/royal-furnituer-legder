@@ -3,3 +3,11 @@ dist/
 .env*
 *.swp
 playwright-report/
+
+# Local agent and cloud credentials
+.aws/
+.codex/
+.agents/
+
+# Personal task notes stay local.
+/todo.md

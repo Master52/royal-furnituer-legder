@@ -1,17 +1,17 @@
 // Keep these pure calculation functions identical to the billing helpers in Code.gs.
 export const BILLING_UNITS={nos:'NOS.',box:'BOX',sqft:'SQ. FT.',rft:'RUNNING FT.',kg:'KG'};
 export const blankMeasurement=()=>({description:'',length:'',width:'',quantity:'1',pieces:'1'});
-export function scaledInput(value,label){
+export function scaledInput(value,label,{signed=false}={}){
   const text=String(value??'').trim();
-  if(!/^\d+(\.\d{1,3})?$/.test(text))throw new Error(`${label} must be positive with at most three decimal places.`);
-  const [whole,fraction='']=text.split('.'),number=Number(whole)*1000+Number(fraction.padEnd(3,'0'));
-  if(!Number.isSafeInteger(number)||number<=0||number>1000000000)throw new Error(`${label} must be between 0.001 and 1,000,000.`);
+  if(!(signed?/^-?\d+(\.\d{1,3})?$/:/^\d+(\.\d{1,3})?$/).test(text))throw new Error(`${label} must be ${signed?'nonzero':'positive'} with at most three decimal places.`);
+  const [whole,fraction='']=text.replace(/^-/,'').split('.'),number=(Number(whole)*1000+Number(fraction.padEnd(3,'0')))*(text.startsWith('-')?-1:1);
+  if(!Number.isSafeInteger(number)||number===0||!signed&&number<0||Math.abs(number)>1000000000)throw new Error(`${label} must have a magnitude between 0.001 and 1,000,000${signed?' (negative weights record returns)':''}.`);
   return number;
 }
 export function draftMeasurements(item){
   return (item.measurements||[]).map(row=>{
     const dimensions=['sqft','rft'].includes(item.billingUnit),perimeter=item.measurementMode==='perimeter';
-    return {description:String(row.description||'').trim(),lengthMilli:dimensions?scaledInput(row.length,'Length'):0,widthMilli:item.billingUnit==='sqft'||perimeter?scaledInput(row.width,'Width'):0,quantityMilli:dimensions?0:scaledInput(row.quantity,item.billingUnit==='kg'?'Weight':'Quantity'),pieces:Number(row.pieces)};
+    return {description:String(row.description||'').trim(),lengthMilli:dimensions?scaledInput(row.length,'Length'):0,widthMilli:item.billingUnit==='sqft'||perimeter?scaledInput(row.width,'Width'):0,quantityMilli:dimensions?0:scaledInput(row.quantity,item.billingUnit==='kg'?'Weight':'Quantity',{signed:item.billingUnit==='kg'}),pieces:Number(row.pieces)};
   });
 }
 export function billingQuantity_(item){
@@ -35,11 +35,18 @@ export function billingQuantity_(item){
       let value;
       if(unit==='sqft'){if(!positive(row.lengthMilli)||!positive(row.widthMilli))throw new Error('Enter valid length and width.');value=BigInt(row.lengthMilli)*BigInt(row.widthMilli);}
       else if(unit==='rft'){if(!positive(row.lengthMilli)||mode==='perimeter'&&!positive(row.widthMilli))throw new Error('Enter valid frame dimensions or length.');value=mode==='perimeter'?BigInt(2)*(BigInt(row.lengthMilli)+BigInt(row.widthMilli)):BigInt(row.lengthMilli);}
-      else {if(!positive(row.quantityMilli))throw new Error('Enter a valid weight or quantity.');value=BigInt(row.quantityMilli);}
+      else {if(!(unit==='kg'?Number.isSafeInteger(row.quantityMilli)&&row.quantityMilli!==0&&Math.abs(row.quantityMilli)<=1000000000:positive(row.quantityMilli)))throw new Error('Enter a valid weight or quantity.');value=BigInt(row.quantityMilli);}
       numerator+=value*BigInt(row.pieces);
     }
   }else{if(!Number.isSafeInteger(item.quantityMilli)||item.quantityMilli<=0||item.quantityMilli>1000000000)throw new Error('Enter a valid item quantity.');numerator=BigInt(item.quantityMilli);}
-  if(numerator<=BigInt(0)||numerator>BigInt(1000000)*denominator)throw new Error('Total item quantity must be positive and no greater than 1,000,000.');
+  if(numerator<=BigInt(0)||numerator>BigInt(1000000)*denominator){
+    if(unit==='kg'&&rows.length){
+      const magnitude=numerator<BigInt(0)?-numerator:numerator;
+      const net=(numerator<BigInt(0)?'-':'')+(magnitude/BigInt(1000)).toString()+((magnitude%BigInt(1000))?'.'+(magnitude%BigInt(1000)).toString().padStart(3,'0').replace(/0+$/,''):'');
+      throw new Error(`This KG group totals ${net} kg (each weight × Pieces). ${numerator<=BigInt(0)?'Returns must be less than the added weight in this group. Put the positive and return rows in the same KG group.':'The net weight must not exceed 1,000,000 kg.'}`);
+    }
+    throw new Error('Total item quantity must be positive and no greater than 1,000,000.');
+  }
   return {numerator,denominator,quantityMilli:Number((numerator*BigInt(1000)+denominator/BigInt(2))/denominator)};
 }
 export function billingPrice_(rate,quantity){
@@ -62,12 +69,19 @@ export function quantityText(item){
   if(!item.billingUnit)return String(Number(item.quantityMilli)/1000);
   return billingQuantityText(billingQuantity_(item),item.billingUnit);
 }
+// A return row may be negative even though the complete billed group is positive.
+// Do not apply whole-group validation to an individual display row.
+export function measurementQuantityText(item,row){
+  if(item.billingUnit!=='kg')return quantityText({...item,measurements:[row]});
+  const numerator=BigInt(row.quantityMilli)*BigInt(row.pieces);
+  return (numerator<BigInt(0)?'-':'+')+billingQuantityText({numerator:numerator<BigInt(0)?-numerator:numerator,denominator:BigInt(1000)},'kg');
+}
 export function measurementText(item,row){
   const pieces=row.pieces,description=row.description?`${row.description}: `:'',unit=item.measurementUnit==='inches'?'in':'ft';
   const length=Number(row.lengthMilli)/1000,width=Number(row.widthMilli)/1000;
   if(item.billingUnit==='sqft'||item.measurementMode==='perimeter')return `${description}${length} × ${width} ${unit} · ${pieces} piece${pieces===1?'':'s'}${item.measurementMode==='perimeter'?' · perimeter':''}`;
   if(item.billingUnit==='rft')return `${description}${length} ${unit} · ${pieces} piece${pieces===1?'':'s'}`;
-  return `${description}${Number(row.quantityMilli)/1000} ${BILLING_UNITS[item.billingUnit]} × ${pieces}`;
+  return `${description}${item.billingUnit==='kg'&&row.quantityMilli>0?'+':''}${Number(row.quantityMilli)/1000} ${BILLING_UNITS[item.billingUnit]} × ${pieces}`;
 }
 export function measurementDraftFromItem(item){
   return {grouped:(item.measurements||[]).length>1||(!['sqft','rft'].includes(item.billingUnit)&&(item.measurements||[]).length>0),billingUnit:item.billingUnit||'',measurementUnit:item.measurementUnit||'feet',measurementMode:item.measurementMode||'quantity',measurements:(item.measurements||[]).map(row=>({description:row.description||'',length:row.lengthMilli?String(row.lengthMilli/1000):'',width:row.widthMilli?String(row.widthMilli/1000):'',quantity:row.quantityMilli?String(row.quantityMilli/1000):'1',pieces:String(row.pieces)}))};

@@ -14,8 +14,8 @@ export function accountBackend() {
       setNumberFormat(){return this;},setBackground(){return this;},setFontColor(){return this;},setFontWeight(){return this;}
     };}};tabs.set(name,value);return value;
   }
-  const ss={getSheetByName:name=>tabs.get(name),insertSheet:sheet};
-  const context=vm.createContext({console,Utilities:{DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(algorithm,text)=>Array.from(createHash(algorithm).update(text).digest())},ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:key=>key==='LEDGER_ACCESS_TOKEN'?TEST_ACCESS_TOKEN:'test-sheet'})},SpreadsheetApp:{openById:()=>ss,flush(){}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
+  const ss={getId:()=> 'test-sheet',getSheetByName:name=>tabs.get(name),insertSheet:sheet};
+  const context=vm.createContext({console,Utilities:{DigestAlgorithm:{SHA_256:'sha256'},computeDigest:(algorithm,text)=>Array.from(createHash(algorithm).update(typeof text==='string'?text:Buffer.from(text.map(value=>value&255))).digest())},ContentService:{MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})},PropertiesService:{getScriptProperties:()=>({getProperty:key=>key==='LEDGER_ACCESS_TOKEN'?TEST_ACCESS_TOKEN:'test-sheet'})},SpreadsheetApp:{openById:()=>ss,flush(){}},LockService:{getScriptLock:()=>({waitLock(){},hasLock:()=>true,releaseLock(){}})}});
   vm.runInContext(readFileSync(new URL('../../google-apps-script/Code.gs',import.meta.url),'utf8'),context);
   const rawPost=body=>context.doPost({postData:{contents:JSON.stringify(body)}});
   const post=(action,transaction)=>rawPost({action,transaction,accessToken:TEST_ACCESS_TOKEN});

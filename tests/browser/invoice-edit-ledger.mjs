@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 import assert from 'node:assert/strict';
 import {accountBackend,TEST_ACCESS_TOKEN} from '../helpers/accountBackend.js';
 import {makeParty,makeInvoice} from '../../src/accounts.js';
@@ -18,8 +19,8 @@ await context.route('https://script.google.com/**',async route=>{
  if(body.action==='updateInvoice'&&loseReply){loseReply--;await route.abort('failed');return;}
  await route.fulfill({json:result});
 });
-const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',dialog=>dialog.accept());
-const popup=()=>page.locator('dialog[open]'),form=()=>page.locator('.invoice-form');
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));page.on('dialog',dialog=>dialog.accept());
+const popup=()=>page.locator('dialog[open]:not(.action-dialog)'),form=()=>page.locator('.invoice-form');
 async function openEdit(){await page.locator('.sidebar').getByRole('button',{name:/Dashboard/}).click();await page.locator('.activity-open').first().click();await popup().getByRole('button',{name:'Edit Invoice',exact:true}).click();await form().waitFor();}
 async function close(){await popup().getByRole('button',{name:'Close popup',exact:true}).click();}
 try{

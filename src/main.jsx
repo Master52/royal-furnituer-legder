@@ -1,3 +1,5 @@
+import {randomUUID} from './uuid.js';
+import ActionDialogProvider,{useActionDialog} from './ActionDialogProvider.jsx';
 import StartupLogo from './StartupLogo.jsx';
 import {BRAND_LOGO} from './brand.js';
 import KeyboardShortcuts from './KeyboardShortcuts.jsx';
@@ -16,6 +18,7 @@ import { PAYMENT_QUEUE_KEY, readPaymentQueue, mutatePaymentQueue } from './payme
 const StockUpdateWorkspace=lazy(()=>import('./StockUpdateWorkspace.jsx'));
 const StockPanel = lazy(() => import('./StockPanel.jsx'));
 const ToolsPanel = lazy(() => import('./ToolsPanel.jsx'));
+const ChallansPanel=lazy(()=>import('./ChallansPanel.jsx'));
 const Settings = lazy(() => import('./Settings.jsx'));
 import { normalizePreferences, preferenceKey, entryDefaults, csvForTransactions, downloadText } from './preferences.js';
 import './styles.css';
@@ -33,6 +36,8 @@ import TransactionDetails from './TransactionDetails.jsx';
 import SyncStatus from './SyncStatus.jsx';
 import FeedbackToast from './FeedbackToast.jsx';
 import useStock from './useStock.js';
+import useChallans from './useChallans.js';
+import './challans.css';
 import {invoiceNoteRevision} from './accounts.js';
 import {planBulkDelete} from './bulkDelete.js';
 import ActivityTable from './ActivityTable.jsx';
@@ -52,6 +57,7 @@ async function checkedSettlementSnapshot(request) {
   finally{clearTimeout(timer);}
 }
 function App() {
+ const {confirmAction,requestReason}=useActionDialog();
   const pendingKey = 'rf.pending';
   const brandLogo = BRAND_LOGO;
   const [endpoint, setEndpoint] = useState(readEndpoint);
@@ -73,6 +79,15 @@ function App() {
   const accounts=useAccounts(endpoint,accountsEnabled);
   const stockEnabled=accountsEnabled&&versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.24.0');
   const [view, setView] = useState('dashboard');
+  const challansEnabled=accountsEnabled&&versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.30.0');
+  const challans=useChallans(endpoint,challansEnabled,view==='challans');
+  const [challansOpened,setChallansOpened]=useState(false),[captureChallanRequest,setCaptureChallanRequest]=useState(0),[challanRequest,setChallanRequest]=useState(null),[hasPhotoDraft,setHasPhotoDraft]=useState(false);
+  useEffect(()=>{if(view==='challans')setChallansOpened(true);},[view]);
+  useEffect(()=>{setCaptureChallanRequest(0);setChallanRequest(null);setHasPhotoDraft(false);},[endpoint]);
+  useEffect(()=>{if(challans.loaded&&accounts.lastInvoice?.id)challans.reload();},[accounts.lastInvoice]);
+  function capturePurchaseChallan(){setView('challans');setCaptureChallanRequest(value=>value+1);}
+  function updatePurchaseChallan(record){setChallanRequest({record,request:Date.now()});}
+
   const [toolsOpened,setToolsOpened]=useState(false);
   useEffect(()=>{if(view==='tools')setToolsOpened(true);},[view]);
   const [manualStockOpen,setManualStockOpen]=useState(false),[accessRecovery,setAccessRecovery]=useState(null);
@@ -227,7 +242,7 @@ function App() {
   }
   async function restore(transaction) {
     if (lock.current || pending || !endpoint) return;
-    if (!window.confirm(`Restore ${money(transaction.amountMinor)} for ${transaction.party || transaction.category} on ${transaction.transactionDate}?`)) return;
+    if (!await confirmAction(`Restore ${money(transaction.amountMinor)} for ${transaction.party || transaction.category} on ${transaction.transactionDate}?`)) return;
     lock.current=true;setBusy(true);setError('');setSettingsFeedback('');
     try {
       const result=await request(endpoint,{id:transaction.id,deletedAt:transaction.deletedAt,_expectedRevision:Number(transaction.revision || 0)},'restore');
@@ -339,24 +354,24 @@ function App() {
   }, [modal, connectionRestored]);
   function focusAmount() { setTimeout(() => { if (window.matchMedia('(min-width: 761px)').matches) focusAndCenter(amountRef.current); }, 0); }
   function openEntry() { setPaymentOpen(true); setError(''); focusAmount(); }
-  function closePayment() {
+  async function closePayment() {
     if(lock.current)return;
-    if(hasDraft(form) && !window.confirm('Discard this unsaved payment and close?'))return;
-    setPaymentOpen(false);setEditing(null);setForm(newEntry(entryDefaults(preferences)));setError('');
+    setPaymentOpen(false);setError('');
+    if(hasDraft(form))setNotice('Payment draft kept. Open Record Payment to continue.');
   }
-  function startNew() {
+  async function startNew() {
     if (lock.current) return;
-    if (hasDraft(form) && !window.confirm('Discard the unsaved entry and start a new payment?')) return;
+    if (hasDraft(form) && !await confirmAction('Discard the unsaved entry and start a new payment?')) return;
     setEditing(null); setForm(newEntry(entryDefaults(preferences))); setPaymentOpen(true); setError(''); focusAmount();
   }
-  function beginEdit(transaction) {
+  async function beginEdit(transaction) {
     if (lock.current || outbox.some(item=>item.id===transaction.id)) return;
-    if (hasDraft(form) && !window.confirm('Discard the current draft and edit this payment?')) return;
+    if (hasDraft(form) && !await confirmAction('Discard the current draft and edit this payment?')) return;
     setEditing({...transaction,_endpoint:endpoint}); setForm(editEntry(transaction)); setPaymentOpen(true); setError(''); setNotice(''); focusAmount();
   }
   async function reloadConflictedEdit() {
     const settlementCreate=pending?._action==='create'&&hasSettlement(pending);
-    if (lock.current || !pending || outbox.length>1 || !window.confirm(settlementCreate?'Review this rejected settlement with the latest party balance? Your entered payment will be kept.':'Discard this attempted edit and load the latest saved payment?')) return;
+    if (lock.current || !pending || outbox.length>1 || !await confirmAction(settlementCreate?'Review this rejected settlement with the latest party balance? Your entered payment will be kept.':'Discard this attempted edit and load the latest saved payment?')) return;
     lock.current=true;setBusy(true);
     try {
       const result=settlementCreate?await checkedSettlementSnapshot(accounts.reload({fresh:true})):await request(endpoint);
@@ -375,15 +390,15 @@ function App() {
         ? {...previous,recordType:'adjustment',category:'Cashflow adjustment',direction:'adjustment',method:'Adjustment',adjustmentMethod:'Cash',countedBalance:'',preservedCashAdjustmentMinor:0,preservedOnlineAdjustmentMinor:0}
         : {...previous,recordType:'payment',category:categories.includes(previous.category)?previous.category:preferences.defaultCategory,direction:['in','out'].includes(previous.direction)?previous.direction:'in',method:methods.includes(previous.method)?previous.method:preferences.defaultMethod});
   }
-  function partyPayment(party) {
+  async function partyPayment(party) {
     if(lock.current)return false;
-    if (hasDraft(form) && !window.confirm('Discard the current payment draft?')) return false;
+    if (hasDraft(form) && !await confirmAction('Discard the current payment draft?')) return false;
     setEditing(null);setForm(partyPaymentEntry(party));setPaymentOpen(true);setError('');focusAmount();return true;
   }
   function openSettings() { setUrl(endpoint); setError(''); setSettingsFeedback(''); setModal('settings'); }
-  function openTweak(type) {
+  async function openTweak(type) {
     if(lock.current||!endpoint)return;
-    if(hasDraft(form)&&!window.confirm('Discard the current entry and open this balance tool?'))return;
+    if(hasDraft(form)&&!await confirmAction('Discard the current entry and open this balance tool?'))return;
     const next=newEntry(entryDefaults(preferences));
     if(type==='transfer')Object.assign(next,{recordType:'transfer',category:'Transfer',direction:'transfer',method:'Transfer'});
     else Object.assign(next,{recordType:'adjustment',category:'Cashflow adjustment',direction:'adjustment',method:'Adjustment',adjustmentMethod:'Cash',countedBalance:'',preservedCashAdjustmentMinor:0,preservedOnlineAdjustmentMinor:0});
@@ -392,7 +407,7 @@ function App() {
   useEffect(() => { if (paymentOpen && !modal) focusAmount(); }, [paymentOpen, modal]);
   useEffect(() => {
     const handler = event => {
-      if (event.defaultPrevented || modal || busy || (!paymentOpen && document.querySelector('dialog[open]'))) return;
+      if (event.defaultPrevented || document.querySelector('.action-dialog[open]') || modal || busy || (!paymentOpen && document.querySelector('dialog[open]'))) return;
       if (!paymentOpen && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase()==='i' && !event.repeat && !event.isComposing && !event.getModifierState?.('AltGraph')) {
         if (accounts.canQueue) { event.preventDefault(); setInvoiceCreateRequest(request=>request+1); }
         return;
@@ -444,12 +459,12 @@ function App() {
           const current=partySettlementQuote(snapshot,form.partyId,editing);
           if(current.balance!==displayed.balance)throw new Error('The party balance changed. Review the updated discount before saving.');
           transaction=makePartySettlement(snapshot,{...form,dateTime:form.customDate?form.dateTime:localNow()},editing?.id,editing);
-          if(!window.confirm(`Receive ${money(transaction.amountMinor)} and waive ${money(transaction.settlementDiscountMinor)} to settle ${current.party.name}’s ${money(current.balance)} balance?`))return;
+          if(!await confirmAction(`Receive ${money(transaction.amountMinor)} and waive ${money(transaction.settlementDiscountMinor)} to settle ${current.party.name}’s ${money(current.balance)} balance?`))return;
         }finally{lock.current=false;setBusy(false);}
       }else transaction = makeTransaction({...form,dateTime:form.customDate?form.dateTime:localNow(),expectedCashMinor:expectedCashForEntry,expectedOnlineMinor:expectedOnlineForEntry}, editing?.id);
       if (!transaction) return;
       if(editing&&hasSettlement(editing)&&!form.fullFinal){
-        if(!window.confirm('Remove this payment’s full & final discount? The waived amount will return to the party balance.'))return;
+        if(!await confirmAction('Remove this payment’s full & final discount? The waived amount will return to the party balance.'))return;
         transaction.settlementDiscountMinor='';
       }
       if (transaction.partyId && !accountsEnabled) throw new Error('Update the Sheet backend to 1.8.0 before saving party-linked payments.');
@@ -458,9 +473,9 @@ function App() {
       if (retry) return retryUpload();
       if (!retry && editing) {
         if (editing._endpoint !== endpoint) throw new Error('Reconnect the original sheet before saving this edit.');
-        transaction = {...transaction,_action:'update',_editId:crypto.randomUUID(),_expectedRevision:Number(editing.revision || 0)};
+        transaction = {...transaction,_action:'update',_editId:randomUUID(),_expectedRevision:Number(editing.revision || 0)};
       }
-      transaction = { ...transaction, _endpoint: endpoint, _action:transaction._action||'create', _queueId:crypto.randomUUID(), _status:'queued', _queuedAt:new Date().toISOString() };
+      transaction = { ...transaction, _endpoint: endpoint, _action:transaction._action||'create', _queueId:randomUUID(), _status:'queued', _queuedAt:new Date().toISOString() };
       serializeRequest(endpoint,queueRecord(transaction),transaction._action);
       if(!await persistOutbox(queue=>[...queue,transaction]))return;
       setRows(previous=>applyQueuedOperation(previous,transaction));
@@ -471,13 +486,14 @@ function App() {
     const first=outboxRef.current[0];
     if(!first||first._status!=='failed')return;
     if(first._endpoint&&first._endpoint!==endpoint){setError('Reconnect the original Sheet before retrying this queued transaction.');return;}
-    if(!first._endpoint&&!window.confirm('This saved payment has no recorded Sheet destination. Confirm that the currently connected Google Sheet is its intended destination before uploading.'))return;
+    if(!first._endpoint&&!await confirmAction('This saved payment has no recorded Sheet destination. Confirm that the currently connected Google Sheet is its intended destination before uploading.'))return;
     setEditConflict(first._errorCode==='EDIT_CONFLICT');
     if(!await persistOutbox(queue=>queue.map(item=>item._queueId===first._queueId?{...item,_endpoint:endpoint,_status:'queued',_error:null,_errorCode:null}:item)))return;
     setError('');setNotice('Retrying upload to Google Sheets…');
   }
   async function connect(event) {
     event.preventDefault(); setError('');
+    if(challans.busy||challans.pending||hasPhotoDraft){setError('Save selected challan photos and finish their uploads before changing the Sheet connection.');return;}
     if(stock.busy||stock.pending){setError('Resolve pending stock updates before changing the Sheet connection.');return;}
     if (accounts.busy) { setError('Wait for the party or invoice request to finish.'); return; }
     if (editing) { setError('Finish or cancel your edit before changing connections.'); return; }
@@ -499,12 +515,13 @@ function App() {
     finally { lock.current = false; setBusy(false); }
   }
   async function disconnect() {
+    if(challans.busy||challans.pending||hasPhotoDraft){setError('Save selected challan photos and finish their uploads before disconnecting.');return;}
     if(stock.busy||stock.pending){setError('Resolve pending stock updates before disconnecting.');return;}
     if (lock.current) return;
     if (accounts.pending || accounts.busy) { setError('Resolve the saved party or invoice request before disconnecting.'); return; }
     if (pending) {setError('Resolve pending payments before disconnecting.');return;}
     if (editing) { setError('Finish or cancel your edit before disconnecting.'); return; }
-    if (!window.confirm('Disconnect this browser? Your Google Sheet and transactions will remain unchanged.')) return;
+    if (!await confirmAction('Disconnect this browser? Your Google Sheet and transactions will remain unchanged.')) return;
     try {
       forgetAccessToken(endpoint);await clearEndpoint(); localStorage.removeItem('rf.connectionInfo');
       applyConnectionPreferences(''); setEndpoint(''); setUrl(''); setRows([]); setConnectionInfo(null); setSynced(false); setError(''); setNotice('This browser is disconnected.');
@@ -521,7 +538,7 @@ function App() {
     if(busy||accounts.busy||accounts.pending||outboxRef.current.length)return false;
     const invoices=selection.filter(row=>row.kind==='invoice').length,notes=selection.filter(row=>row.kind==='note').length,payments=selection.filter(row=>row.kind==='payment').length;
     selection=selection.map(row=>row.kind==='invoice'?{...row,expectedNotes:invoiceNoteRevision(accounts.notes,row.record.id)}:row);
-    const reason=window.prompt(`Delete ${selection.length} selected records (${invoices} invoices, ${notes} notes, ${payments} payments)? Deleted invoices also remove their notes from the active ledger. All Sheet rows are retained. Enter a reason:`);
+    const reason=await requestReason(`Delete ${selection.length} selected records (${invoices} invoices, ${notes} notes, ${payments} payments)? Deleted invoices also remove their notes from the active ledger. All Sheet rows are retained. Enter a reason:`);
     if(!reason?.trim())return false;
     setError('');
     try{const fresh=await accounts.reload({fresh:true});if(!fresh)throw new Error('Refresh failed. Nothing was queued for deletion.');if(!versionAtLeast(fresh.backendVersion,'1.14.0'))throw new Error('Deploy backend 1.14.0 before bulk deletion.');const operations=planBulkDelete(selection,fresh,reason.trim());if(await accounts.queueDeletes(operations)){setNotice(`${selection.length} selected records queued for deletion. Follow progress in Sync status.`);return true;}}
@@ -529,8 +546,8 @@ function App() {
   }
   async function deleteTransaction(transaction) {
     if (lock.current || outbox.some(item=>item.id===transaction.id)) return;
-    if (!window.confirm(`Delete ${money(transaction.amountMinor)} · ${transaction.party || transaction.category} on ${transaction.transactionDate}? This removes it from your ledger and reports.`)) return;
-    const operation={id:transaction.id,_action:'delete',_endpoint:endpoint,_queueId:crypto.randomUUID(),_status:'queued',_queuedAt:new Date().toISOString()};
+    if (!await confirmAction(`Delete ${money(transaction.amountMinor)} · ${transaction.party || transaction.category} on ${transaction.transactionDate}? This removes it from your ledger and reports.`)) return;
+    const operation={id:transaction.id,_action:'delete',_endpoint:endpoint,_queueId:randomUUID(),_status:'queued',_queuedAt:new Date().toISOString()};
     if(!await persistOutbox(queue=>queue.some(item=>item.id===operation.id)?queue:[...queue,operation]))return;
     setRows(previous=>applyQueuedOperation(previous,operation));setNotice('Deleted on this device. Uploading deletion to Google Sheets…');
   }
@@ -540,9 +557,9 @@ function App() {
   return <>
     <StartupLogo ready={connectionRestored}/>
     {invocation}
-    <aside className="sidebar"><div className="brand-invocation" lang="ar" dir="rtl">یاحسین</div><a className="brand" href="#"><img className="brand-logo" data-brand-home src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon"><img src={brandLogo} alt=""/></div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
+    <aside className="sidebar"><div className="brand-invocation" lang="ar" dir="rtl">یاحسین</div><a className="brand" href="#"><img className="brand-logo" data-brand-home src={brandLogo} alt=""/><span>{preferences.shopName}<span className="brand-sub">SHOP LEDGER</span></span></a><p className="nav-label">YOUR WORKSPACE</p>{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools'],['challans','▧','Challans']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='challans'?7:key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='challans'?7:key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>setView(key)} aria-current={view===key?'page':undefined}>{icon} <span>{label}</span></button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" className="nav-item" onClick={openSettings}>⚙ <span>Settings</span></button><div className="sidebar-bottom"><div className="shop-icon"><img src={brandLogo} alt=""/></div><strong>{preferences.shopName}</strong><small>Your everyday shop ledger</small><button className="settings-link" onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>⚙ Connection settings</button></div></aside>
     <main><header className="topbar"><KeyboardShortcuts onNavigate={setView} onSettings={openSettings} onSearch={()=>{setView('history');setTimeout(()=>focusAndCenter(document.querySelector('.activity-filters input[type=search]')),0);}}/><button className="outline" onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>⚙ Settings</button>{installPrompt && <button className="outline install-button" onClick={installApp}>＋ Install app</button>}<SyncStatus endpoint={endpoint} accounts={accounts} stock={stock} outbox={outbox} synced={synced} refreshing={refreshing} readError={refreshReadError||(error&&!modal?error:'')} cacheSavedAt={cacheSavedAt} accountsEnabled={accountsEnabled} stockEnabled={stockEnabled} onRefresh={()=>refresh()} onRetryPayment={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload} onReviewAccounts={()=>setView('accounts')} onReviewStock={()=>setView('stock')} onConnect={openSettings}/></header>
-      {(view==='history'||view==='dashboard')&&<section className="heading dashboard-heading"><div><h1>{view==='history'?'History':'Dashboard'}</h1></div>{<div className="dashboard-actions"><button data-hotkey="alt+n" aria-keyshortcuts="Alt+N" data-hotkey-label="Record payment" className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button data-hotkey="alt+i" aria-keyshortcuts="Alt+I" data-hotkey-label="New invoice / note" className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ New Invoice / Note <kbd>Alt + I</kbd></button><button type="button" data-hotkey="alt+u" aria-keyshortcuts="Alt+U" className="outline" disabled={!stockEnabled||!stock.openingDate||stock.pending?.failed||stock.pending?.invalid} onClick={()=>setManualStockOpen(true)}>Stock Update <kbd>Alt + U</kbd></button><button data-hotkey="alt+d" aria-keyshortcuts="Alt+D" data-hotkey-label="Resume invoice draft" className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
+      {(view==='history'||view==='dashboard')&&<section className="heading dashboard-heading"><div><h1>{view==='history'?'History':'Dashboard'}</h1></div>{<div className="dashboard-actions"><button data-hotkey="alt+n" aria-keyshortcuts="Alt+N" data-hotkey-label="Record payment" className="primary" onClick={openEntry} disabled={busy}>＋ Record Payment <kbd>Alt + N</kbd></button><button data-hotkey="alt+i" aria-keyshortcuts="Alt+I" data-hotkey-label="New invoice / note" className="outline" disabled={busy||!accounts.canQueue} onClick={()=>setInvoiceCreateRequest(request=>request+1)}>＋ New Invoice / Note <kbd>Alt + I</kbd></button><button type="button" data-hotkey="alt+u" aria-keyshortcuts="Alt+U" className="outline" disabled={!stockEnabled||!stock.openingDate||stock.pending?.failed||stock.pending?.invalid} onClick={()=>setManualStockOpen(true)}>Stock Update <kbd>Alt + U</kbd></button><button type="button" className="outline" disabled={!challansEnabled} onClick={capturePurchaseChallan}>Capture purchase challan</button><button type="button" className="outline" disabled={!challansEnabled} onClick={()=>setView('challans')}>Update challan</button><button data-hotkey="alt+d" aria-keyshortcuts="Alt+D" data-hotkey-label="Resume invoice draft" className="outline" disabled={busy||!accounts.canQueue||!hasInvoiceDraft} onClick={()=>setInvoiceResumeRequest(request=>request+1)}>Resume draft</button></div>}</section>}
       {!endpoint && <div className="setup-banner"><div><strong>Let’s connect your ledger.</strong><span>Connect Google Sheets to start recording payments.</span></div><button onClick={() => {setUrl(endpoint);setModal('settings');setError('');}}>Connect Sheets ↗</button></div>}
       <FeedbackToast message={notice} onDismiss={dismissNotice} action={notice===savedInvoiceNotice&&accounts.lastInvoice?{label:'View invoice',onClick:()=>{setInvoiceOpenRequest({id:accounts.lastInvoice.id,request:Date.now()});setNotice('');}}:null}/>
       {integrityIssueCount>0 && <p className="integrity-warning" role="alert">{integrityIssueCount} Sheet record{integrityIssueCount===1?' has':'s have'} invalid or inconsistent transaction data. Affected records are excluded from totals; review those rows in Transactions before using the report.</p>}
@@ -553,14 +570,15 @@ function App() {
         {pending?._status==='failed'&&<div className="account-pending" role="alert"><p>{pending._error||'A payment could not upload. Retry it before adding another.'}</p><button type="button" className="outline" onClick={editConflict&&outbox.length===1?reloadConflictedEdit:retryUpload}>{editConflict&&outbox.length===1?'Reload latest':'Retry upload'}</button></div>}
         <PaymentEntry compact splitEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} parties={accounts.parties} partyBalances={accounts.partyBalances} balancesLoaded={accounts.loaded} balancesCached={accounts.cached} balancesRefreshing={accounts.refreshing} fullFinalEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.16.0')} settlementBlocked={!!pending||!!accounts.pending||accounts.busy} accountsEnabled={accountsEnabled} editing={editing} cancelEdit={closePayment} returnToPayment={startNew} form={form} update={update} onPartyChange={(name,id)=>setForm(previous=>paymentPartySelection(previous,name,id))} chooseCategory={chooseCategory} save={save} formRef={formRef} amountRef={amountRef} busy={busy} refreshing={refreshing} pending={pending} endpoint={endpoint} rows={rows} refresh={refresh} openHistory={()=>{closePayment();setView('history');}} focusAndCenter={focusAndCenter} expectedCashMinor={expectedCashForEntry} expectedOnlineMinor={expectedOnlineForEntry}/>
       </AccountDialog>}
-      <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel onNotice={setNotice} catalogueEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} splitEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} partyTypesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.21.0')} partyTransactions={rows} onTransaction={(record,action)=>openActivity({kind:'payment',record},action)} partyInvoicePaymentEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.20.0')} invoiceRoundingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.25.0')} invoiceCheckoutEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.19.0')} itemDescriptionsEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.2')} measurementEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.0')} openingBalanceDeletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.1')} challanEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.13.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.12.0')} deletionEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.11.0')} noteOpenRequest={noteOpenRequest} notesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.10.0')} invoiceEditingEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.9.0')} invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} partyOpenRequest={partyOpenRequest} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
+      <div className={view==='accounts'?'accounts-view':'accounts-view screen-hidden'}><AccountsPanel challanRequest={challanRequest} challanRecords={challans.rows} onChallanRefresh={challans.reload} onNotice={setNotice} catalogueEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} splitEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.22.0')} partyTypesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.21.0')} partyTransactions={rows} onTransaction={(record,action)=>openActivity({kind:'payment',record},action)} partyInvoicePaymentEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.20.0')} invoiceRoundingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.25.0')} invoiceCheckoutEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.19.0')} itemDescriptionsEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.2')} measurementEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.15.0')} openingBalanceDeletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.1')} challanEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.13.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.12.0')} deletionEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.11.0')} noteOpenRequest={noteOpenRequest} notesEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.10.0')} invoiceEditingEnabled={versionAtLeast(accounts.backendVersion || connectionInfo?.version,'1.9.0')} invoiceResumeRequest={invoiceResumeRequest} onDraftChange={setHasInvoiceDraft} invoiceCreateRequest={invoiceCreateRequest} invoiceOpenRequest={invoiceOpenRequest} onNavigateParties={()=>setView('accounts')} onNavigateDashboard={()=>setView('dashboard')} partyOpenRequest={partyOpenRequest} key={endpoint} accounts={accounts} endpoint={endpoint} enabled={accountsEnabled} preferences={preferences} onPayment={partyPayment} paymentPending={!!pending}/></div>
       {manualStockOpen&&!stock.detailsLoaded&&<AccountDialog title="Stock Update" onClose={()=>setManualStockOpen(false)}><p role="status">Loading stock details…</p>{stock.error&&<p role="alert">{stock.error}</p>}<button className="outline" disabled={stock.loading} onClick={stock.reload}>Retry loading</button></AccountDialog>}
       {manualStockOpen&&stock.detailsLoaded&&<Suspense fallback={<p role="status">Loading stock update…</p>}><StockUpdateWorkspace manual stock={stock} accounts={accounts} onClose={()=>setManualStockOpen(false)}/></Suspense>}
       {view==='stock'&&!stockEnabled&&<section><h1>Stock</h1><p>Connect your Sheet and deploy the updated Code.gs from Settings to enable stock management.</p></section>}
       {view==='stock'&&stockEnabled&&!stock.detailsLoaded&&<section><h1>Stock</h1><p role="status">Loading stock details…</p>{stock.error&&<p role="alert">{stock.error}</p>}<button className="outline" disabled={stock.loading} onClick={stock.reload}>Retry loading</button></section>}
       {view==='stock'&&stockEnabled&&stock.detailsLoaded&&<Suspense fallback={<p role="status">Loading stock workspace…</p>}><StockPanel key={endpoint} stock={stock} endpoint={endpoint} enabled={stockEnabled} accounts={accounts}/></Suspense>}
+      {(view==='challans'||challansOpened)&&<div className={view==='challans'?'':'screen-hidden'}><Suspense fallback={<p role="status">Loading challans…</p>}><ChallansPanel key={endpoint} challans={challans} endpoint={endpoint} enabled={challansEnabled} onUpdate={updatePurchaseChallan} onInvoice={id=>setInvoiceOpenRequest({id,request:Date.now()})} invoiceQueue={accounts.queue} captureRequest={captureChallanRequest} onCaptureDraftChange={setHasPhotoDraft}/></Suspense></div>}
       {(view==='tools'||toolsOpened)&&<div className={view==='tools'?'':'screen-hidden'}><Suspense fallback={<p role="status">Loading tools…</p>}><ToolsPanel active={view==='tools'} shopName={preferences.shopName}/></Suspense></div>}
-      <div className={`report-view ${view==='accounts'||view==='stock'||view==='tools'?'screen-hidden':''}`}>
+      <div className={`report-view ${view==='accounts'||view==='stock'||view==='tools'||view==='challans'?'screen-hidden':''}`}>
       <section className="period-bar"><div><span className="calendar-icon">▦</span><select data-hotkey="alt+f" aria-keyshortcuts="Alt+F" aria-label="Report period" value={period} onChange={e => selectPeriod(e.target.value)}><option value="month">This month</option><option value="today">Today</option><option value="last">Last month</option><option value="custom">Custom period</option></select></div><div className="date-range"><input data-hotkey="alt+shift+f" aria-keyshortcuts="Alt+Shift+F" aria-label="Start date" type="date" value={range[0]} onChange={e => {setPeriod('custom');setRange([e.target.value,range[1]]);}}/><span>—</span><input data-hotkey="alt+shift+t" aria-keyshortcuts="Alt+Shift+T" aria-label="End date" type="date" value={range[1]} onChange={e => {setPeriod('custom');setRange([range[0],e.target.value]);}}/></div><button data-hotkey="alt+r" aria-keyshortcuts="Alt+R" data-hotkey-label="Refresh records" className="refresh" disabled={busy || refreshing || !endpoint} onClick={() => {refresh();}}>{refreshing ? '◌ Updating…' : '↻ Refresh'}</button></section>
       {range[0] > range[1] && <p className="error">The start date must be on or before the end date.</p>}
       {view==='dashboard'&&<DashboardOverview stock={stock} onStock={()=>setView('stock')} onCategory={name=>{setHistoryCategory(name);setMethod('');setQuery('');setView('history');}} accounts={accounts} transactions={confirmedTransactions} range={range} period={period} onParty={openInsightParty} cash={expectedCash} online={expectedOnline}/>}
@@ -568,9 +586,9 @@ function App() {
       <ActivityTable key={view} accounts={accounts} transactions={rows} outbox={outbox} range={range} category={view==='history'?historyCategory:''} method={view==='history'?method:''} query={view==='history'?query:''} history={view==='history'} printing={printingTransactions} editingEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.9.0')} deletionEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.11.0')} noteChangesEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.12.0')} bulkDeleteEnabled={versionAtLeast(accounts.backendVersion||connectionInfo?.version,'1.14.0')&&!outbox.length} onBulkDelete={bulkDelete} paymentBusy={busy||!endpoint||!!accounts.pending} onOpen={row=>openActivity(row)} onEdit={row=>openActivity(row,'edit')} onDelete={row=>openActivity(row,'delete')} onPrint={row=>openActivity(row,'print')} onHistory={()=>{setHistoryCategory('');setView('history');}}/>
       </div><footer><span className="footer-brand"><img src={brandLogo} alt=""/>{preferences.shopName}</span><a href="https://www.instagram.com/royalfurniture45/" target="_blank" rel="noreferrer">Instagram · @royalfurniture45</a><span>Apne Gar ko do ROYAL touch</span><button onClick={()=>{setUrl(endpoint);setModal('settings');setError('');}}>Settings</button></footer>
     </main>
-    <nav className="mobile-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" onClick={openSettings}><span>⚙</span>Settings</button></nav>
+    <nav className="mobile-nav expanded-nav" aria-label="Main navigation">{[['dashboard','▦','Dashboard'],['accounts','◎','Parties'],['history','⇄','History'],['stock','▤','Stock'],['tools','⊞','Tools'],['challans','▧','Challans']].map(([key,icon,label],index)=><button title={`${label} (Alt + Shift + ${key==='challans'?7:key==='tools'?6:key==='stock'?5:index+1})`} aria-keyshortcuts={`Alt+Shift+${key==='challans'?7:key==='tools'?6:key==='stock'?5:index+1}`} key={key} className={!modal && view===key?'active':''} aria-current={!modal && view===key?'page':undefined} onClick={()=>setView(key)}><span>{icon}</span>{label}</button>)}<button title="Settings (Alt + Shift + 4)" aria-keyshortcuts="Alt+Shift+4" onClick={openSettings}><span>⚙</span>Settings</button></nav>
     <dialog className={modal==='settings' ? 'settings-dialog' : ''} ref={dialog} aria-labelledby="settings-title" onCancel={e => {if(busy)e.preventDefault();else setModal('');}}><div className="dialog-heading"><div><div className="settings-brand"><img src={brandLogo} alt=""/><div><p className="eyebrow">SHOP LEDGER</p><h2 id="settings-title">Settings & sheet setup</h2></div></div></div><button className="close" aria-label="Close dialog" disabled={busy} onClick={()=>setModal('')}>×</button></div>{error && <p className="error" role="alert">{error}</p>}
-      {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings accessRequest={accessRecovery} onAccessVerified={destination=>{if(accessRecovery?.endpoint===destination){setModal(accessRecovery.previousModal||'');setAccessRecovery(null);}}} preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy||stock.busy} pending={pending||accounts.pending||stock.pending} openTweak={openTweak}/></Suspense>}
+      {modal && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings accessRequest={accessRecovery} onAccessVerified={destination=>{if(accessRecovery?.endpoint===destination){setModal(accessRecovery.previousModal||'');setAccessRecovery(null);}}} preferences={preferences} savePreferences={savePreferences} range={range} exportCsv={exportCsv} deleted={deleted} loadDeleted={loadDeleted} restore={restore} feedback={settingsFeedback} endpoint={endpoint} info={connectionInfo} synced={synced} url={url} setUrl={setUrl} connect={connect} disconnect={disconnect} busy={busy||accounts.busy||stock.busy} pending={pending||accounts.pending||stock.pending||challans.pending} openTweak={openTweak}/></Suspense>}
 
     </dialog>
   </>;
@@ -578,4 +596,4 @@ function App() {
 const startupTheme=read('rf.appearance',{}).theme||read(preferenceKey(readEndpoint()),{}).theme||'light';
 document.documentElement.dataset.theme=startupTheme==='dark'?'dark':'light';
 document.documentElement.style.colorScheme=document.documentElement.dataset.theme;
-createRoot(document.getElementById('root')).render(<AppErrorBoundary><App/></AppErrorBoundary>);
+createRoot(document.getElementById('root')).render(<AppErrorBoundary><ActionDialogProvider><App/></ActionDialogProvider></AppErrorBoundary>);

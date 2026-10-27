@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 // Read-only UI checks with a simulated Sheet; no real Google requests.
 import assert from 'node:assert/strict';
 import { accountBackend } from '../helpers/accountBackend.js';
@@ -18,7 +19,7 @@ const context=await browser.newContext({viewport:{width:1440,height:1000},servic
 await context.addInitScript(()=>{const endpoint='https://script.google.com/macros/s/TEST-ONLY/exec';localStorage.setItem('rf.endpoint',JSON.stringify(endpoint));localStorage.setItem('rf.connectionInfo',JSON.stringify({endpoint,version:'1.8.1'}));});
 let offline=false;
 await context.route('https://script.google.com/**',async route=>{const body=route.request().postDataJSON();if(offline&&body?.action==='create'){await route.abort('failed');return;}await route.fulfill({json:body?backend.post(body.action,body.transaction):backend.context.doGet()});});
-const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());page.setDefaultTimeout(6000);
+const page=await context.newPage();await acceptActionDialogs(page,{});page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());page.setDefaultTimeout(6000);
 const popup=()=>page.locator('.transaction-detail-dialog');
 const row=name=>page.locator('.activity-table tbody tr').filter({hasText:name}).filter(name==='Detail customer'?{hasText:'Payment received'}:{});
 const close=()=>popup().getByRole('button',{name:'Close popup'}).click();

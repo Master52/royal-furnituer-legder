@@ -26,7 +26,7 @@ try {
  await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('rf.appearance')).theme),'dark');
  assert.equal(await page.locator('body').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(27, 23, 19)');
- assert.equal(await page.locator('dialog[open]').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(39, 33, 27)');
+ assert.equal(await page.locator('dialog[open]:not(.action-dialog)').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(39, 33, 27)');
  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
  await page.reload({waitUntil:'domcontentloaded'});await page.waitForFunction(()=>!document.querySelector('.brand-intro')&&document.querySelector('.brand-logo'));
  assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');

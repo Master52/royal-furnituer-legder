@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {accountBackend,TEST_ACCESS_TOKEN} from '../helpers/accountBackend.js';
@@ -10,7 +11,7 @@ const browser=await chromium.launch({headless:true,args:['--no-sandbox']}),conte
 await context.addInitScript(({endpoint,token})=>{localStorage.setItem('rf.endpoint',JSON.stringify(endpoint));localStorage.setItem('rf.connectionInfo',JSON.stringify({endpoint,version:'1.27.0'}));sessionStorage.setItem('rf.access-token:'+endpoint,token);},{endpoint,token:TEST_ACCESS_TOKEN});
 await context.route(/https:\/\/fonts\.(googleapis|gstatic)\.com\//,route=>route.abort());
 await context.route('https://script.google.com/**',route=>route.fulfill({json:backend.rawPost(route.request().postDataJSON())}));
-const page=await context.newPage();page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
 const form=()=>page.locator('.mobile-invoice-builder'),sheet=()=>page.getByRole('dialog',{name:/Edit invoice item/});
 async function open(){await page.locator('.dashboard-actions').getByRole('button',{name:/New Invoice \/ Note/}).click();await form().waitFor();}
 async function saved(){await page.locator('.invoice-document').waitFor();await page.waitForFunction(()=>!localStorage.getItem('rf.accounts.pending'));}

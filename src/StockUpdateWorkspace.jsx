@@ -1,3 +1,5 @@
+import {randomUUID} from './uuid.js';
+import {useActionDialog} from './ActionDialogProvider.jsx';
 import './stock.css';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import AccountDialog from './AccountDialog.jsx';
@@ -8,6 +10,7 @@ const today=()=>localNow().slice(0,10);
 const KeyHint=({children})=><kbd className="stock-key-hint" aria-hidden="true">{children}</kbd>;
 const itemLabel=item=>`${item.name}${item.code?` · ${item.code}`:''}`;
 export default function StockUpdateWorkspace({stock,accounts,queue=[],allInvoices=[],onClose,onReverse,manual=false}){
+ const {confirmAction}=useActionDialog();
  const [invoice,setInvoice]=useState(manual?{id:'manual',type:'sale',items:[],invoiceNumber:'Manual stock update',revision:0}:null),[selected,setSelected]=useState(''),[rows,setRows]=useState([]),[query,setQuery]=useState(''),[active,setActive]=useState(0),[skipped,setSkipped]=useState([]),[error,setError]=useState(''),[loading,setLoading]=useState(false),[date,setDate]=useState(today),[allowNegative,setAllowNegative]=useState(false),[side,setSide]=useState('invoice'),[split,setSplit]=useState(50),[prices,setPrices]=useState({}),[editingSaved,setEditingSaved]=useState(false),[direction,setDirection]=useState('remove'),[reason,setReason]=useState('Stock adjustment');
  const token=useRef(0),search=useRef(null),quantityRefs=useRef(new Map()),lock=useRef(false),focusQuantity=useRef(null),splitElement=useRef(null),dragging=useRef(false),invoiceSelect=useRef(null),cache=useRef(new Map()),focusSearch=useRef(false),returnDraft=useRef(null),lastRecord=useRef(null);
  useLayoutEffect(()=>{if(focusQuantity.current){const input=quantityRefs.current.get(focusQuantity.current);input?.focus({preventScroll:true});input?.scrollIntoView({block:'nearest',inline:'nearest'});focusQuantity.current=null;}},[rows]);
@@ -29,9 +32,9 @@ export default function StockUpdateWorkspace({stock,accounts,queue=[],allInvoice
 
  async function open(id,force=false){
   if(manual)return;
-  if(!force&&dirty&&!window.confirm('Discard the unsaved stock entries for this invoice?'))return;
+  if(!force&&dirty&&!await confirmAction('Discard the unsaved stock entries for this invoice?'))return;
   const current=++token.current;setSelected(id);setInvoice(null);setRows([]);setPrices({});setQuery('');setError('');setLoading(true);setAllowNegative(false);setEditingSaved(false);
-  try{const header=allInvoices.find(row=>row.id===id);const record=header?.status==='deleted'?{...header,items:[]}:await details(id);if(token.current===current){cache.current.set(id,{revision:Number(record.revision||0),detailToken:record.detailToken,promise:Promise.resolve(record),record});setInvoice(record);setDate(today());const reviewed=stockInvoiceStatus(record,stock.reviews,stock.operations)==='Reviewed';if(reviewed||stockInvoiceStatus(record,stock.reviews,stock.operations)==='Needs review'){setRows(invoiceStockEntries(record,stock).map(row=>({...row,id:crypto.randomUUID()})));}if(focusSearch.current){focusSearch.current=false;setSide('update');}}}
+  try{const header=allInvoices.find(row=>row.id===id);const record=header?.status==='deleted'?{...header,items:[]}:await details(id);if(token.current===current){cache.current.set(id,{revision:Number(record.revision||0),detailToken:record.detailToken,promise:Promise.resolve(record),record});setInvoice(record);setDate(today());const reviewed=stockInvoiceStatus(record,stock.reviews,stock.operations)==='Reviewed';if(reviewed||stockInvoiceStatus(record,stock.reviews,stock.operations)==='Needs review'){setRows(invoiceStockEntries(record,stock).map(row=>({...row,id:randomUUID()})));}if(focusSearch.current){focusSearch.current=false;setSide('update');}}}
 
   catch(e){if(token.current===current)setError(e.message);}finally{if(token.current===current)setLoading(false);}
  }
@@ -39,26 +42,26 @@ export default function StockUpdateWorkspace({stock,accounts,queue=[],allInvoice
  useEffect(()=>{if(manual)return;for(const row of pending.filter(row=>row.id!==selected).slice(0,2))details(row.id).catch(()=>{});},[selected,queue.map(row=>row.id).join('|')]);
  useLayoutEffect(()=>{if(invoice&&!readOnly&&!blocked&&(side==='update'||manual))search.current?.focus({preventScroll:true});},[invoice?.id,readOnly,blocked]);
  useEffect(()=>{if(!manual&&pending[0])open(pending[0].id,true);return()=>{token.current++;};},[]);
- function close(){if(!(dirty||returnDraft.current?.rows.length||Object.keys(returnDraft.current?.prices||{}).length)||window.confirm('Discard unsaved stock entries and close?'))onClose();}
- function add(item){if(!invoice||blocked||readOnly)return;if(rows.length>=100){setError('Save up to 100 stock entries at a time.');return;}const id=crypto.randomUUID();focusQuantity.current=id;setRows(previous=>[...previous,{id,stockItemId:item.id,quantity:'',unit:item.baseUnit,...(manual?{direction}: {})}]);setQuery('');setActive(0);setSide('update');}
+ async function close(){if(!(dirty||returnDraft.current?.rows.length||Object.keys(returnDraft.current?.prices||{}).length)||await confirmAction('Discard unsaved stock entries and close?'))onClose();}
+ function add(item){if(!invoice||blocked||readOnly)return;if(rows.length>=100){setError('Save up to 100 stock entries at a time.');return;}const id=randomUUID();focusQuantity.current=id;setRows(previous=>[...previous,{id,stockItemId:item.id,quantity:'',unit:item.baseUnit,...(manual?{direction}: {})}]);setQuery('');setActive(0);setSide('update');}
  function removeRow(id){const removed=rows.find(row=>row.id===id);if(removed&&!rows.some(row=>row.id!==id&&row.stockItemId===removed.stockItemId))setPrices(previous=>{const next={...previous};delete next[removed.stockItemId];return next;});const index=rows.findIndex(row=>row.id===id),next=rows[index+1]||rows[index-1];if(next)focusQuantity.current=next.id;setRows(previous=>previous.filter(row=>row.id!==id));if(!next)search.current?.focus({preventScroll:true});}
  function edit(id,values){setRows(previous=>previous.map(row=>row.id===id?{...row,...values}:row));}
  const nextId=()=>pending.find(row=>row.id!==selected)?.id;
- function skip(){const next=nextId();if(dirty&&!window.confirm('Discard these stock entries and skip this invoice?'))return;setSkipped(previous=>[...previous,selected]);if(next)open(next,true);else{token.current++;setSelected('');setInvoice(null);setRows([]);setQuery('');}}
+ async function skip(){const next=nextId();if(dirty&&!await confirmAction('Discard these stock entries and skip this invoice?'))return;setSkipped(previous=>[...previous,selected]);if(next)open(next,true);else{token.current++;setSelected('');setInvoice(null);setRows([]);setQuery('');}}
  async function save(noImpact=false,unchanged=false){
   if(lock.current||blocked||!invoice||readOnly)return;setError('');lock.current=true;
   try{
    if(manual&&!reason.trim())throw new Error('Enter a reason for this stock update.');
    if(!date)throw new Error('Choose a movement date.');
    if(!noImpact&&!unchanged&&!rows.length&&!savedOperations.length)throw new Error('Search for a stock item and add its quantity first.');
-   if(noImpact&&rows.length&&!window.confirm('Discard the stock entries and mark this invoice as no stock impact?'))return;
+   if(noImpact&&rows.length&&!await confirmAction('Discard the stock entries and mark this invoice as no stock impact?'))return;
    const entered=unchanged?invoiceStockEntries(invoice,stock):rows;
    const movements=noImpact||unchanged?[]:entered.map(row=>{const item=stock.items.find(item=>item.id===row.stockItemId);if(!item)throw new Error('This stock item is no longer available. Refresh stock.');if(stockDecimal(row.quantity)<=0n)throw new Error('Enter a positive quantity for every stock item.');return {stockItemId:row.stockItemId,expectedRevision:Number(item.revision||0),quantity:manual&&row.direction==='remove'?'-'+row.quantity:row.quantity,unit:row.unit};});
    if(!noImpact&&!unchanged&&negativeRows.length&&!allowNegative)throw new Error('This entry creates negative stock. Correct quantities or allow negative stock.');
    const priceUpdates=noImpact||unchanged?[]:Object.entries(prices).map(([id,values])=>{const item=stock.items.find(row=>row.id===id);const change={stockItemId:id,expectedRevision:Number(item.revision||0)};for(const [key,value] of Object.entries(values))change[key]=stockPrice(value);return change;});
    const record=invoice;
    const adjusting=!manual&&savedOperations.length>0;
-   const payload={id:crypto.randomUUID(),stockMovementSchemaVersion:1,...(unchanged?{stockUnchanged:true}:{}),movementDate:date,allowNegative,priceUpdates,reason:manual?reason.trim():noImpact?'Made to order / no stock impact':`Stock entered for invoice ${invoice.invoiceNumber}`,movements,...(!manual?{reviewMode:'invoice',invoiceId:invoice.id,invoiceRevision:Number(invoice.revision||0),invoiceType:invoice.type,invoiceStockRevision:invoice.stockRevision??'',...(adjusting?{supersedesIds:savedOperations.map(op=>op.id)}:{}),reviewItemIds:invoice.items.map(item=>item.id)}:{})};
+   const payload={id:randomUUID(),stockMovementSchemaVersion:1,...(unchanged?{stockUnchanged:true}:{}),movementDate:date,allowNegative,priceUpdates,reason:manual?reason.trim():noImpact?'Made to order / no stock impact':`Stock entered for invoice ${invoice.invoiceNumber}`,movements,...(!manual?{reviewMode:'invoice',invoiceId:invoice.id,invoiceRevision:Number(invoice.revision||0),invoiceType:invoice.type,invoiceStockRevision:invoice.stockRevision??'',...(adjusting?{supersedesIds:savedOperations.map(op=>op.id)}:{}),reviewItemIds:invoice.items.map(item=>item.id)}:{})};
    const saved=await stock.queueStock(manual?'recordStock':adjusting?'adjustInvoiceStock':'reviewInvoiceStock',payload);
    if(saved){setEditingSaved(false);if(manual){setRows([]);setPrices({});setQuery('');search.current?.focus({preventScroll:true});}else{cache.current.set(record.id,{revision:Number(record.revision||0),detailToken:record.detailToken,promise:Promise.resolve(record),record});lastRecord.current=record;focusSearch.current=true;const next=nextId();if(next)await open(next,true);else{token.current++;setInvoice(null);setSelected('');setRows([]);setPrices({});setQuery('');}}}
 

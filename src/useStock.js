@@ -2,7 +2,7 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {request,serializeRequest} from './api.js';
 import {loadStockCache,saveStockCache} from './storage.js';
 import {ACCESS_CHANGED_EVENT} from './api.js';
-import {applyPendingStock} from './stock.js';
+import {applyPendingStock,parseStockQueue} from './stock.js';
 const EMPTY={items:[],movements:[],reviews:[],operations:[],openingDate:''};
 export default function useStock(endpoint,enabled,{deferred=false,details=false,summary,summaryReady=false,summaryCached=false,summaryCheckedAt='',refreshSummary}={}){
  const [data,setData]=useState(EMPTY),[busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[error,setError]=useState(''),[queue,setQueue]=useState([]),[tick,setTick]=useState(0),[cached,setCached]=useState(false),[checkedAt,setCheckedAt]=useState('');
@@ -12,7 +12,7 @@ export default function useStock(endpoint,enabled,{deferred=false,details=false,
  const policy=useRef(null);policy.current={deferred,needsDetails,summaryReady,summary,refreshSummary};
  const confirmedAt=useRef('');
  const latest=useRef(null);latest.current={data,cached};
- function read(key){const value=JSON.parse(localStorage.getItem(key)||'null'),rows=value?.queue|| (value?[value]:[]);if(!Array.isArray(rows)||rows.some(row=>!row.payload?.id||!row.action))throw new Error('The saved stock queue cannot be read.');return rows.map(row=>row.rejected?{...row,failed:true}:row);}
+ function read(key){return parseStockQueue(localStorage.getItem(key));}
  const readPending=useCallback(()=>{try{const rows=read(key);setQueue(rows);return rows;}catch(e){setError(e.message);setQueue([{invalid:true}]);return []; }},[key]);
  async function mutate(target,callback){return navigator.locks.request(`rf.stock.queue:${target}`,()=>{const storageKey=`rf.stock-pending:${target}`,rows=callback(read(storageKey));if(rows.length)localStorage.setItem(storageKey,JSON.stringify({queue:rows}));else localStorage.removeItem(storageKey);if(currentEndpoint.current===target)setQueue(rows);return rows;});}
  const reload=useCallback(async()=>{
@@ -45,10 +45,10 @@ export default function useStock(endpoint,enabled,{deferred=false,details=false,
  async function queueStock(action,payload){
   if(!enabled||!endpoint)return false;
   try{
-   if(!['reviewInvoiceStock','adjustInvoiceStock','recordStock','updateStockItem'].includes(action))throw new Error('Invalid stock queue action.');
+   if(!['reviewInvoiceStock','adjustInvoiceStock','recordStock','updateStockItem','createStockItem'].includes(action))throw new Error('Invalid stock queue action.');
    serializeRequest(endpoint,payload,action);
    await mutate(endpoint,rows=>{
-    const compatible=action==='updateStockItem'?['updateStockItem']:['reviewInvoiceStock','adjustInvoiceStock','recordStock'];
+    const compatible=['updateStockItem','createStockItem'].includes(action)?['updateStockItem','createStockItem']:['reviewInvoiceStock','adjustInvoiceStock','recordStock'];
     if(rows.some(row=>row.failed||row.invalid||!compatible.includes(row.action)))throw new Error('Resolve the pending stock request first.');
     if(payload.invoiceId&&rows.some(row=>row.payload.invoiceId===payload.invoiceId))throw new Error('This invoice already has a queued stock update.');
     return [...rows,{action,payload,queuedAt:new Date().toISOString()}];
@@ -60,7 +60,7 @@ export default function useStock(endpoint,enabled,{deferred=false,details=false,
  useEffect(()=>{if(!busy&&pending&&!pending.failed&&!pending.invalid&&enabled)retry();},[pending,busy,enabled,endpoint,tick]);
  useEffect(()=>{const online=()=>{if(pending?.failed&&!pending.rejected)retry();};window.addEventListener('online',online);return()=>window.removeEventListener('online',online);},[pending,endpoint]);
  useEffect(()=>{const verified=event=>{if(event.detail?.endpoint!==endpoint)return;reload();if(pending?.failed&&!pending.rejected)retry();};window.addEventListener(ACCESS_CHANGED_EVENT,verified);return()=>window.removeEventListener(ACCESS_CHANGED_EVENT,verified);},[endpoint,pending,reload]);
- const canQueueItemEdits=enabled&&Boolean(endpoint)&&!data._summary&&(!busy||queue.length>0)&&queue.every(row=>!row.failed&&!row.invalid&&row.action==='updateStockItem');
+ const canQueueItemEdits=enabled&&Boolean(endpoint)&&!data._summary&&(!busy||queue.length>0)&&queue.every(row=>!row.failed&&!row.invalid&&['updateStockItem','createStockItem'].includes(row.action));
  const optimistic=useMemo(()=>applyPendingStock(data,data._summary?[]:queue),[data,queue]);
  const items=useMemo(()=>optimistic.items.filter(item=>item.status!=='deleted'),[optimistic.items]);
  const archivedItems=useMemo(()=>optimistic.items.filter(item=>item.status==='deleted'),[optimistic.items]);

@@ -51,3 +51,18 @@ test('malformed responses retry once, invalid ledger shapes fail clearly and inv
  }
  const invalid=fixture([]);await assert.rejects(invalid.request('https://example.com/exec'));assert.equal(invalid.calls.length,0);
 });
+
+test('the exact Apps Script lock timeout retries the same invoice after a pause and stays recoverable if still busy',async()=>{
+ const busy=()=>json({ok:false,code:'REQUEST_FAILED',error:'Lock timeout: another process was holding the lock for too long.'});
+ const payload={id:'lock-timeout-invoice00001',items:[{description:'ALUMINIUM COATED'}]};
+ const recovered=fixture([busy(),json({ok:true,id:payload.id})]);
+ assert.equal((await recovered.request(endpoint,payload,'createInvoice')).id,payload.id);
+ assert.deepEqual(recovered.waits,[5000]);assert.equal(recovered.calls[0].options.body,recovered.calls[1].options.body);
+ for(const response of [busy,()=>json({ok:false,code:'LOCK_TIMEOUT',error:'Busy'})]){
+  const f=fixture([response(),response()]);
+  await assert.rejects(f.request(endpoint,payload,'createInvoice'),error=>error.retryable===true&&!error.code&&/Google Sheets is busy/.test(error.message)&&/do not need to enter it again/.test(error.message));
+  assert.equal(f.calls.length,2);assert.deepEqual(f.waits,[5000]);
+ }
+ // Reading invoice details also gets an actionable message, without repeated requests forever.
+ const reading=fixture([busy(),busy()]);await assert.rejects(reading.request(endpoint,{ids:[payload.id]},'getInvoices'),/Google Sheets is busy/);assert.equal(reading.calls.length,2);
+});

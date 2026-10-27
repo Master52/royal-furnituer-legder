@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 // Uses simulated Sheets only and the existing optional Playwright installation.
 import assert from 'node:assert/strict';
 import {accountBackend} from '../helpers/accountBackend.js';
@@ -26,8 +27,8 @@ await context.route('https://script.google.com/**',async route=>{
  if(body?.action==='create'&&losePayment){losePayment=false;await route.abort('failed');return;}
  await route.fulfill({json:oldVersion?{...result,backendVersion:'1.15.3'}:result});
 });
-const page=await context.newPage();page.setDefaultTimeout(8000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
-const dialog=()=>page.locator('dialog[open]');
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(8000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());
+const dialog=()=>page.locator('dialog[open]:not(.action-dialog)');
 const payment=()=>page.locator('.payment-dialog');
 const balance=()=>payment().getByRole('status',{name:'Party balance'});
 const discount=()=>payment().getByRole('status',{name:'Settlement discount'});
@@ -76,7 +77,7 @@ try{
  // A competing payment rejects the whole settlement. Recovery keeps the final amount.
  await page.getByRole('button',{name:/Record Payment Alt/}).click();await selectParty(concurrent);await checkbox().check();await amount().fill('800');await payment().getByRole('button',{name:'Change date',exact:true}).click();await payment().getByLabel('Transaction date & time').fill('2026-11-05T12:00');injectPayment=true;
  await save().click();await payment().waitFor({state:'hidden'});await page.waitForFunction(()=>JSON.parse(localStorage.getItem('rf.outbox'))?.[0]?._errorCode==='EDIT_CONFLICT');
- await page.getByRole('button',{name:'Resolve payment upload',exact:true}).click();await payment().waitFor();assert.equal(await amount().inputValue(),'800.00');assert.match(await discount().innerText(),/₹100\.00/);
+ await page.locator('.sync-status summary').click();await page.getByRole('button',{name:'Resolve payment upload',exact:true}).click();await payment().waitFor();assert.equal(await amount().inputValue(),'800.00');assert.match(await discount().innerText(),/₹100\.00/);
  await save().click();await payment().waitFor({state:'hidden'});await page.waitForFunction(()=>JSON.parse(localStorage.getItem('rf.outbox'))?.length===0);
  const confirmed=backend.post('listAccounts',{});assert.equal(confirmed.transactions.filter(row=>row.partyId===concurrent.id).length,2);assert.equal(accountBalances(confirmed.parties,confirmed.invoices,confirmed.transactions,confirmed.notes).find(row=>row.party.id===concurrent.id).balance,0);
  // Older deployments offer a clear upgrade message instead of accepting an unsupported waiver.

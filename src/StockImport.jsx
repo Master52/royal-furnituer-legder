@@ -1,3 +1,5 @@
+import {randomUUID} from './uuid.js';
+import {useActionDialog} from './ActionDialogProvider.jsx';
 import {applyConfirmedStockUnits} from './stockImportProfile.js';
 import React,{useEffect,useRef,useState} from 'react';
 import {STOCK_UNITS,parseStockCsv,convertStock,stockDecimal,stockText,validateStockBaseQuantity,stockImportItems,exportedStockRow,stockUnitLabel} from './stock.js';
@@ -6,6 +8,7 @@ import AccountDialog from './AccountDialog.jsx';
 export {stockPrice} from './stock.js';
 export function UnitSelect({label,value,onChange,optional=false,disabled=false,required=false,units=STOCK_UNITS}){return <label>{label}<select aria-label={label} disabled={disabled} required={required} value={value} onChange={e=>onChange(e.target.value)}><option value="">{optional?'None':'Choose unit'}</option>{units.map(unit=><option key={unit} value={unit}>{stockUnitLabel(unit)}</option>)}</select></label>;}
 export default function StockImport({endpoint,stock,onClose}){
+ const {confirmAction}=useActionDialog();
  const key=`rf.stock-import:${endpoint}`;
  const [draft,setDraft]=useState(()=>{try{const saved=JSON.parse(localStorage.getItem(key)||'null');return saved?{...saved,rows:saved.rows.map(applyConfirmedStockUnits)}:{date:localNow().slice(0,10),rows:[]};}catch{return {date:localNow().slice(0,10),rows:[]};}}),[query,setQuery]=useState(''),[error,setError]=useState(''),[unitFilter,setUnitFilter]=useState('pending'),[bulk,setBulk]=useState({baseUnit:'',secondaryUnit:'',conversion:'',importUnit:'',saleRateUnit:'',purchaseRateUnit:''});
  useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(draft));}catch{setError('Cannot save the import draft in this browser. Keep this window open.');}},[draft,key]);
@@ -19,15 +22,15 @@ export default function StockImport({endpoint,stock,onClose}){
  const incomplete=row=>row.include&&(!row.baseUnit||!row.importUnit||row.secondaryUnit&&!row.conversion||!row.saleRateUnit||!row.purchaseRateUnit||openingIssue(row));
  const pending=draft.rows.filter(incomplete).length;
  const visible=draft.rows.filter(row=>(unitFilter!=='pending'||incomplete(row)||editingRow===row.id)&&`${row.name} ${row.code}`.toLowerCase().includes(query.toLowerCase()));
- function applyBulk(){setError('');if(!bulk.baseUnit||!bulk.importUnit||!bulk.saleRateUnit||!bulk.purchaseRateUnit||bulk.secondaryUnit&&!bulk.conversion){setError('Choose every bulk unit and any conversion before applying.');return;}const ids=new Set(visible.filter(row=>row.include).map(row=>row.id));if(!ids.size)return;if(!window.confirm(`Apply these confirmed units to ${ids.size} visible included items?`))return;setDraft(previous=>({...previous,rows:previous.rows.map(row=>ids.has(row.id)?{...row,...bulk,unitsReviewed:true}:row)}));}
+ async function applyBulk(){setError('');if(!bulk.baseUnit||!bulk.importUnit||!bulk.saleRateUnit||!bulk.purchaseRateUnit||bulk.secondaryUnit&&!bulk.conversion){setError('Choose every bulk unit and any conversion before applying.');return;}const ids=new Set(visible.filter(row=>row.include).map(row=>row.id));if(!ids.size)return;if(!await confirmAction(`Apply these confirmed units to ${ids.size} visible included items?`))return;setDraft(previous=>({...previous,rows:previous.rows.map(row=>ids.has(row.id)?{...row,...bulk,unitsReviewed:true}:row)}));}
  async function load(file){if(!file)return;const token=++fileToken.current;setError('');try{if(file.size>1000000)throw new Error('Choose a CSV smaller than 1 MB.');const rows=parseStockCsv(await file.text());if(token!==fileToken.current)return;setDraft(previous=>{const remembered=new Map(previous.rows.map(row=>[row.sourceId,row]));return {...previous,rows:rows.map(row=>{const saved=remembered.get(row.sourceId);if(!saved)return row;const fields=['baseUnit','secondaryUnit','conversion','importUnit','saleRateUnit','purchaseRateUnit','saleRateUnitExplicit','purchaseRateUnitExplicit','unitsReviewed'];return applyConfirmedStockUnits({...row,...Object.fromEntries(fields.map(key=>[key,saved[key]??row[key]]))});})};});}catch(e){if(token===fileToken.current)setError(e.message);}}
  async function submit(e){e.preventDefault();setError('');try{
   const included=draft.rows.filter(row=>row.include);
   if(needsSourceCsv)throw new Error('Choose the CSV again to import its original values rather than an older edited draft.');
   if(!included.length||!asExported&&pending)throw new Error('Choose included items and confirm units for the configured mode.');
   const items=stockImportItems(draft.rows,asExported);
-  if(!window.confirm(`Import opening stock for ${items.length} items on ${draft.date}? This does not create purchases or payments.`))return;
-  if(await stock.save('importStock',{id:crypto.randomUUID(),openingDate:draft.date,importMode,items})){localStorage.removeItem(key);onClose();}
+  if(!await confirmAction(`Import opening stock for ${items.length} items on ${draft.date}? This does not create purchases or payments.`))return;
+  if(await stock.save('importStock',{id:randomUUID(),openingDate:draft.date,importMode,items})){localStorage.removeItem(key);onClose();}
  }catch(e){setError(e.message);}}
  return <AccountDialog title="Import opening stock" className={`stock-import-dialog ${asExported?'stock-import-fast':''}`} busy={stock.busy} onClose={onClose}><form data-shortcut-form onSubmit={submit}>
  <div className="stock-import-mode" role="group" aria-label="Import mode"><button type="button" className={asExported?'primary':'outline'} aria-pressed={asExported} disabled={stock.busy||!!stock.pending} onClick={()=>setImportMode('as-exported')}>Import as exported</button><button type="button" className={!asExported?'primary':'outline'} aria-pressed={!asExported} disabled={stock.busy||!!stock.pending} onClick={()=>setImportMode('configured')}>Configure units first</button></div>

@@ -5,6 +5,7 @@ export function validateEndpoint(value) {
   return url.href;
 }
 export const MAX_REQUEST_CHARS = 100000;
+export const MAX_PHOTO_REQUEST_CHARS = 1200000;
 export const ACCESS_REQUIRED_EVENT='rf:access-required';
 export const ACCESS_CHANGED_EVENT = 'rf:access-changed';
 export const accessTokenKey = endpoint => `rf.access-token:${validateEndpoint(endpoint)}`;
@@ -30,14 +31,14 @@ export async function verifyAccess(endpoint,token,send=request){
 }
 export function serializeRequest(endpoint, transaction, action = 'create', accessToken = readAccessToken(endpoint)) {
   const body = JSON.stringify({action:transaction ? action : 'list',transaction:transaction ?? {},...(accessToken ? {accessToken} : {})});
-  if (body.length > MAX_REQUEST_CHARS) throw new Error('This record contains too much detail for Google Sheets. Split the invoice into smaller invoices before saving.');
+  if (body.length > (action==='uploadChallanPhoto'?MAX_PHOTO_REQUEST_CHARS:MAX_REQUEST_CHARS)) throw new Error('This record contains too much detail for Google Sheets. Split the invoice into smaller invoices before saving.');
   return body;
 }
 // Apps Script may spend 25 seconds waiting for its write lock before doing work.
 export const REQUEST_TIMEOUT_MS = 60000;
-const READ_ACTIONS = new Set(['verifyAccess','list', 'listDeleted', 'listAccounts', 'getInvoices', 'listStock']);
-const CREATE_ACTIONS = new Set(['create', 'createParty', 'createInvoice', 'createInvoiceNote', 'importStock', 'createStockItem', 'updateStockItem', 'bulkUpdateStockItems', 'deleteStockItems', 'recordStock', 'reviewInvoiceStock', 'reverseStock']);
-const EDIT_ACTIONS = new Set(['update', 'updateParty', 'updateInvoice', 'updateInvoiceNote']);
+const READ_ACTIONS = new Set(['verifyAccess','list', 'listDeleted', 'listAccounts', 'getInvoices', 'listStock','listChallans','getChallanPhoto']);
+const CREATE_ACTIONS = new Set(['create', 'createParty', 'createInvoice', 'createInvoiceNote', 'importStock', 'createStockItem', 'updateStockItem', 'bulkUpdateStockItems', 'deleteStockItems', 'recordStock', 'reviewInvoiceStock', 'reverseStock','createChallan','uploadChallanPhoto','deleteChallanPhotos']);
+const EDIT_ACTIONS = new Set(['update', 'updateParty', 'updateInvoice', 'updateInvoiceNote','updateChallanRetention']);
 function safeToRetry(transaction, action) {
   return !transaction || READ_ACTIONS.has(action) || Boolean(transaction.id &&
     (CREATE_ACTIONS.has(action) || EDIT_ACTIONS.has(action) && transaction._editId));
@@ -56,7 +57,7 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
     let body = serializeRequest(endpoint, transaction, action, requestToken);
     let renewedAccess=false;
     for (let attempt = 0; ; attempt++) {
-      const started=Date.now();let timingResult,status='failed';
+      const started=Date.now();let timingResult,status='failed',retryDelayMs=1500;
       try {
         const fetchOptions = {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body, redirect:'follow', cache:'no-store', credentials:'omit', signal:timeoutSignal(REQUEST_TIMEOUT_MS)};
         const response = await fetchImpl(endpoint, fetchOptions);
@@ -77,8 +78,13 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
         timingResult=result;
         if (!result.ok) {
           const error = new Error(result.error || 'Google Sheets returned an error.');
-          // A lock wait failure means Google never started this operation.
-          if (result.code === 'REQUEST_FAILED' && /timed?\s*out|\btimeout\b/i.test(error.message)) error.retryable = true;
+          // Lock contention is temporary, not a rejected invoice. Handle the
+          // message emitted by older deployments as well as an explicit code.
+          const lockBusy=result.code==='LOCK_TIMEOUT'||result.code==='REQUEST_FAILED'&&/\block(?:\s+wait)?\s*(?:timed?\s*out|timeout)\b|another process was holding the lock/i.test(error.message);
+          if(lockBusy){
+            error.message='Google Sheets is busy finishing another request. Wait a moment and retry. Any saved upload remains on this device; you do not need to enter it again.';
+            error.retryable=true;error.retryDelayMs=5000;
+          }else if (result.code === 'REQUEST_FAILED' && /timed?\s*out|\btimeout\b/i.test(error.message)) error.retryable = true;
           else error.code = result.code;
           throw error;
         }
@@ -90,10 +96,11 @@ export function createRequest({fetchImpl = (...args) => fetch(...args), wait = m
         if (['TimeoutError','AbortError'].includes(cause.name)) error = connectionError('Google Sheets took too long to respond. Your saved changes remain on this device; retry to confirm them.', true);
         else if (cause instanceof TypeError) error = connectionError('Connection to Google Sheets was interrupted. Your saved changes remain on this device. Check your connection or deployment access.', true);
         if (attempt >= 1 || !error.retryable || !safeToRetry(transaction, action) || globalThis.navigator?.onLine === false) throw error;
+        retryDelayMs=error.retryDelayMs||1500;
       } finally {
         recordRequestTiming(endpoint,{action:transaction?action:'list',durationMs:Date.now()-started,attempt:attempt+1,status,result:timingResult});
       }
-      await wait(1500);
+      await wait(retryDelayMs);
     }
   };
 }

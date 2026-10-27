@@ -249,3 +249,38 @@ test('stock-entry values convert secondary quantities, use draft purchase prices
  assert.throws(()=>stockEntryValueMinor(item,{quantity:'1',unit:'KG'}));
  assert.throws(()=>stockEntryValueMinor(item,{quantity:'1',unit:'PCS'},'2.345'));
 });
+
+test('default stock display units persist with conversions and preserve history and valuation',async()=>{
+ const {stockDisplay,stockValueMinor}=await import('../src/stock.js');const b=accountBackend(),data=opening(b),original=data.items[0],history=structuredClone(data.movements);
+ const payload={id:'stock-display-change-001',_expectedRevision:0,item:{...original,displayUnit:'BOX'}};
+ const saved=b.post('updateStockItem',payload);assert.equal(saved.ok,true,saved.error);
+ const current=read(b).items[0];assert.equal(current.displayUnit,'BOX');assert.deepEqual(stockDisplay(current),{unit:'BOX',quantity:'6.988'});assert.equal(current.balance,'6988');assert.equal(stockValueMinor(current),stockValueMinor(original));assert.equal(JSON.stringify(read(b).movements),JSON.stringify(history));
+ assert.equal(b.post('updateStockItem',payload).ok,true);
+ assert.equal(b.post('updateStockItem',{...payload,id:'stock-display-invalid01',_expectedRevision:1,item:{...current,displayUnit:'KG'}}).ok,false);
+ assert.deepEqual(stockDisplay({...current,balance:'-1500'}),{unit:'BOX',quantity:'-1.5'});
+ assert.equal(stockDisplay({...current,balance:'1',conversion:'3'}).quantity,'≈ 0.33333333');
+});
+test('queued new stock items preview immediately, allow dependent edits and reconcile idempotently',async()=>{
+ const {applyPendingStock}=await import('../src/stock.js');const b=accountBackend(),data=opening(b);
+ const newItem={...item(),id:'stock-background-new001',sourceId:'',name:'NEW KG ITEM',code:'',baseUnit:'KG',secondaryUnit:'GRAM',conversion:'0.001',displayUnit:'GRAM',saleRateUnit:'KG',purchaseRateUnit:'KG'};
+ const operation={action:'createStockItem',payload:{id:'stock-background-op0001',item:newItem}};
+ const projected=applyPendingStock(data,[operation]);assert.equal(projected.items.length,2);assert.equal(projected.items[1]._pending,true);assert.equal(projected.items[1].balance,'0');assert.equal(projected.items[1].revision,0);
+ assert.equal(applyPendingStock(data,[{...operation,rejected:true}]).items.length,1);
+ const edit={action:'updateStockItem',payload:{id:'stock-background-op0002',_expectedRevision:0,item:{...newItem,name:'EDITED NEW ITEM'}}};
+ assert.equal(applyPendingStock(data,[operation,edit]).items[1].name,'EDITED NEW ITEM');
+ const saved=b.post(operation.action,operation.payload);assert.equal(saved.ok,true,saved.error);assert.equal(b.post(operation.action,operation.payload).ok,true);assert.equal(applyPendingStock(saved.stock,[operation]).items.length,2);
+ const updated=b.post(edit.action,edit.payload);assert.equal(updated.ok,true,updated.error);assert.equal(updated.stock.items[1].name,'EDITED NEW ITEM');assert.equal(updated.stock.items[1].balance,'0');assert.equal(read(b).movements.length,data.movements.length);
+});
+
+
+test('saved stock queues reject malformed optimistic data without changing the stored content',async()=>{
+ const {parseStockQueue}=await import('../src/stock.js');
+ const valid={action:'reviewInvoiceStock',payload:{id:'review-saved-queue001',reviewMode:'invoice',movements:[{stockItemId:itemId,quantity:'1.5',unit:'PCS'}],reviewItemIds:[]}};
+ assert.deepEqual(parseStockQueue(JSON.stringify({queue:[valid]})),[valid]);
+ assert.deepEqual(parseStockQueue(null),[]);
+ assert.equal(parseStockQueue(JSON.stringify({...valid,rejected:true}))[0].failed,true);
+ for(const row of [null,{action:'unknown',payload:{id:'id'}},{...valid,payload:{...valid.payload,movements:null}},{...valid,payload:{...valid.payload,movements:[null]}},{...valid,payload:{...valid.payload,priceUpdates:[null]}},{...valid,payload:{...valid.payload,movements:[{stockItemId:itemId,quantity:'NaN',unit:'PCS'}]}}]){
+  const text=JSON.stringify({queue:[row]});assert.throws(()=>parseStockQueue(text),/preserved/);assert.equal(text,JSON.stringify({queue:[row]}));
+ }
+ assert.throws(()=>parseStockQueue(JSON.stringify({queue:[valid,valid]})),/preserved/);
+});

@@ -560,3 +560,76 @@ The shared transparent logo lives in `src/assets/royal-logo-transparent.png`; `s
 Theme selection applies immediately and is remembered for this device under `rf.appearance`, including when changing Sheet connections. Other shop preferences still use Save preferences. Legacy neutral screen colours use the shared royal theme tokens, with original print-colour fallbacks. The startup logo appears centrally, then moves to the actual sidebar/mobile-header position after connection restoration. Reduced-motion preferences skip the movement.
 
 Validation: `npm test`, `npm run build`, `tests/browser/branding.mjs` and `tests/browser/tools.mjs` pass. The branding browser check covers immediate/saved themes, desktop and phone layouts, startup, reduced motion, transparent assets and canvas exports.
+
+### KG returns, background stock creation, display units and amount words (backend 1.29.0)
+
+KG invoice groups accept negative weight rows for returns. For example, enter `3` and `-1.2` to bill `1.8 KG` at the shared rate and CP. Documents retain the signed rows (`+3 KG`, `-1.2 KG`). Each weight must be nonzero with at most three decimals; the net group weight must remain positive. Other billing units continue to require positive quantities.
+
+Adding a stock item now closes the form once its request is saved durably on the device. The zero-stock item appears immediately with a Saving indicator while the upload runs in the background. Additional item creations and settings edits can queue in order. Failed uploads retain their original request for retry; rejected requests remain available for review/discard.
+
+Stock → Edit → **Default display unit** chooses the base or secondary unit for the stock list. Set the secondary unit and its conversion first when needed. The list converts the quantity without modifying base balances, historical movements, price units or stock valuation. Non-exact display conversions are marked `≈` and rounded to eight decimals. Older CSV items can still have their previously unspecified base unit assigned.
+
+Payment entry and payment-with-invoice fields show the amount in English below the input, using Indian numbering: `100` → “one hundred”, `110000` → “one lakh ten thousand”. Decimal amounts include paise.
+
+For KG returns and persisted display units, replace the Sheet’s Apps Script with the bundled `google-apps-script/Code.gs` **1.29.0**, run `setup()`, update the existing deployment to a new version, then refresh the app. Setup appends the display-unit columns and preserves existing records. Background stock creation and amount words are frontend changes.
+
+### Quieter saves and app dialogs
+
+Invoice and correction-note Save buttons now save directly after validation, without a second browser confirmation. Closing the payment popup keeps its unsaved draft for reopening during the current page session; New entry still asks before replacing it. Grouping errors appear beside the invoice item.
+
+Deletion, discarding changes, imports and settlement decisions use app-styled dialogs. Escape or Go back cancels; confirmation dialogs initially focus Go back. Actions that require a reason use a labelled form with an explicit action button. Browser alerts, confirms and prompts are no longer used by these workflows. The browser’s page-exit protection remains for unsaved work. No Apps Script update is required for these interaction changes.
+
+### Purchase challan photos and amount-only purchases (backend 1.30.0)
+
+**Capture purchase challan** is available from Dashboard and the new **Challans** workspace (Alt + Shift + 7). Upload photos or use the phone’s camera picker. One challan supports up to ten pages. JPEG, PNG and WebP photos are converted to JPEG, scaled to at most 2,000 pixels along the longest edge and compressed to at most 750 KB per page. Review the pages and save. The form closes once the complete batch is durably stored in IndexedDB; background uploads continue across navigation and resume after reload. Each page has a stable ID, and upload retries recover staged Drive files without creating duplicate pages. Pending or failed uploads remain associated with their original Sheet. Finish them before switching connections or disconnecting; do not clear site data while uploads are pending.
+
+Open **Update challan** once its photos finish uploading. Desktop shows the photo viewer on the left and the existing purchase invoice editor on the right. The viewer supports page selection, zoom, rotation and photo download. On phones, **Challan photo** and **Purchase invoice** tabs preserve your entries while switching views. Select or create the party, enter the purchase details and save. A captured challan stays linked to exactly one purchase invoice. It becomes completed only after the purchase is committed in Sheets, using that invoice’s server creation time; local queuing alone does not complete it. Retrying or editing an invoice does not restart its completion clock. Itemized purchase invoices retain the separate Stock Update workflow.
+
+All purchase invoices, including ordinary invoices created without photos, have **Enter amount only — no item details**. This records a purchase against the party account without requiring item names, quantities, rates or CP. Invoice-level discounts, rounding, payment and statements still use the existing accounting rules. Amount-only purchases have no automatic stock impact and are excluded from the stock-review queue and price catalogue. An internal amount line preserves compatibility with existing invoice/report calculations and does not represent a stock item. Existing invoice stock updates must be reversed before changing an itemized invoice to amount-only.
+
+Photos are kept by default. **Delete photos automatically 30 days after completion** is an optional, unchecked checkbox when capturing and remains editable in the challan list. Only checked, completed challans become eligible after 30 full elapsed days; the daily cleanup moves eligible photos to Google Drive Trash, processing up to ten challans per run so large backlogs may take additional days. Pending challans and unchecked challans are never selected. The purchase invoice, party ledger, stock history and challan metadata remain. Turning retention off before cleanup preserves the photos. Turning it on for an older completed challan uses its original completion date. Manually moved or renamed Drive files are left for owner review rather than deleted. The app does not permanently empty Drive Trash.
+
+**Enable this release on your Sheet:**
+
+1. Replace Apps Script with the bundled `google-apps-script/Code.gs` **1.30.0** and save.
+2. Run `setup()` to add the optional invoice fields and the `PurchaseChallans` / `ChallanPhotos` tabs. Existing records and unknown columns are preserved.
+3. Run `setupChallanStorage()` once and approve the Drive and trigger permissions. It creates a dedicated Drive folder, stores its ID in `LEDGER_CHALLAN_FOLDER_ID`, and installs one daily `cleanupChallanPhotos` trigger around 03:00 Asia/Kolkata. Running it again reuses the folder and avoids duplicating the current owner’s trigger. The feature never makes photos publicly accessible.
+4. Update the existing web-app deployment to a **New version**, retaining execute-as-owner and existing access-token settings. Refresh the app and check **Challans → Refresh challans**.
+5. Capture a test photo, issue its purchase invoice, and verify the private Drive file and Sheet rows. Real Google authorization, camera behavior and scheduled trigger execution must be checked on the owner’s deployment; local tests simulate Sheets and Drive.
+
+Private photo downloads use the existing access-token API. Photo reads do not acquire the financial write lock. Upload requests permit up to 1.2 million JSON characters per individual photo; financial requests retain the 100,000-character limit. Browser recovery export includes pending challan uploads. The daily task is optional to use: installing it does not delete any images unless their own checkbox is checked and the completion retention period has elapsed.
+
+Google references: [Drive file creation](https://developers.google.com/apps-script/reference/drive/drive-app), [time-driven triggers](https://developers.google.com/apps-script/reference/script/clock-trigger-builder), [moving files to Trash](https://developers.google.com/apps-script/reference/drive/file#setTrashed(Boolean)).
+
+### Challan setup troubleshooting (backend 1.30.1)
+
+`setupChallanStorage()` now logs each service step before executing it: the ledger lock, spreadsheet access, the three affected tab headers, Drive folder access/creation, and saving the folder reference. It reuses an existing folder and never silently replaces one it cannot access. Run the updated function in the Apps Script editor and inspect the Execution log or the left sidebar’s Executions entry for the last step and full error.
+
+Photo storage setup and optional cleanup installation are separate. The main setup still attempts both, but a trigger-permission/quota failure leaves completed photo storage usable with 30-day deletion unchecked. Run `setupChallanCleanup()` separately to retry the daily schedule after resolving that permission. The app keeps the deletion checkbox disabled until the schedule is confirmed. Neither helper changes any challan’s retention checkbox or deletes any photos during setup.
+
+If Google shows an unknown error without creating an execution entry or printing the first setup log, the function never started. Check the editor’s authorization/account session using [Google’s Apps Script troubleshooting guide](https://developers.google.com/apps-script/guides/support/troubleshooting). In particular, use the Sheet/script owner account; a private window signed into only that account can isolate the documented multi-account issues. A code-level exception cannot catch an authorization/editor failure that occurs before execution.
+
+### Missing Google Drive consent (backend 1.30.2)
+
+If setup reports `You do not have permission to call DriveApp.createFolder` with the `https://www.googleapis.com/auth/drive` scope, the script owner has not granted the Drive permission needed for photo storage. The editor setup helpers now call `ScriptApp.requireScopes` before the protected operations, so missing granular consent opens Google’s authorization flow instead of failing later at folder creation. Storage setup requests Drive and Sheets consent; cleanup setup also requests permission to manage script triggers. Run the updated helper as the deployment owner, grant the requested Drive access, and run setup again if the authorization flow interrupted it. No photos or ledger rows are deleted by this authorization check.
+
+If the project uses an explicit `oauthScopes` array in `appsscript.json`, preserve all existing scopes and ensure the three scopes above are included. Apps Script normally detects these from the code; explicit manifests restrict the allowed scope set. See [Google’s granular-consent guidance](https://developers.google.com/apps-script/concepts/scopes#automatically_require_permission_for_necessary_scopes).
+
+
+### Linked purchase photos and manual retention (backend 1.30.3)
+
+Purchase invoice details now display the linked challan photos, with page selection, zoom, rotation and download. The saved invoice’s `sourceChallanId` and the challan’s `invoiceId` preserve the link through invoice edits and photo deletion.
+
+Amount-only purchases always keep their linked photos until manually deleted, even when automatic deletion was checked during capture. Existing amount-only purchases are protected when cleanup runs or challans refresh. Automatic deletion cannot be enabled for them. Itemized purchases retain the optional 30-day policy.
+
+For completed purchases, **Challans → Delete photos** asks for confirmation and moves the photos to private Drive Trash. It preserves the invoice, party balance and link. Failed deletions can retry safely from the saved-request controls.
+
+Deploy bundled Code.gs **1.30.3** as a new version of the existing Apps Script deployment and refresh the app. No new columns or setup steps are required if challan storage is already configured.
+
+### Reliability audit (backend 1.30.4)
+
+The latest release fixes photo-deletion queue recovery, keeps mobile invoice actions anchored, exposes failed background invoice edits inside the viewer, and preserves page scroll locking across overlapping dialogs. Challan uploads refresh once per finished photo batch; listing uses indexed invoice/photo lookups. Manual and scheduled photo deletion share the same retry-safe implementation.
+
+Saved stock queues are checked before previewing them. Recovery downloads include pending stock requests and original challan queue data. Native UUID generation has a secure fallback; challan saves on plain HTTP network addresses explain that HTTPS or localhost is required. Updated development dependencies address the advisories found during the audit.
+
+Deploy bundled Code.gs **1.30.4** as a new version of the existing Apps Script deployment and refresh. See [the audit report](AUDIT-2026-10-27.md) for checks and deployment limits.

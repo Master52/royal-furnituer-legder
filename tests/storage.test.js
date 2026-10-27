@@ -33,3 +33,37 @@ test('disconnect rejects when localStorage removal fails despite a successful In
  await assert.rejects(clearing,/completely removed/);assert.equal(fake.closed,true);
  delete globalThis.window;delete globalThis.indexedDB;delete globalThis.localStorage;
 });
+
+test('challan queue reads preserve storage failures instead of reporting an empty queue',async()=>{
+ const {loadChallanQueue}=await import('../src/storage.js');const fake=fakeDatabase();const loading=loadChallanQueue('sheet');await start();fake.transaction.error=new Error('Photos inaccessible');fake.transaction.onabort();await assert.rejects(loading,/Photos inaccessible/);assert.equal(fake.closed,true);
+ delete globalThis.window;delete globalThis.indexedDB;
+});
+test('challan photo enqueue only succeeds after its IndexedDB write commits',async()=>{
+ const {mutateChallanQueue}=await import('../src/storage.js');const original=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+ Object.defineProperty(globalThis,'navigator',{value:{locks:{request:async(name,task)=>task()}},configurable:true});
+ try{
+  const fake=fakeDatabase();let done=false;const photo={key:'stable-queue-key',action:'uploadChallanPhoto',payload:{id:'saved-photo-id',data:'/9j/PHOTO'}};
+  const saving=mutateChallanQueue('sheet',rows=>[...rows,photo]).then(()=>done=true);
+  await start();fake.request.result=[];fake.transaction.oncomplete();await start();fake.request.onsuccess?.();await start();assert.equal(done,false);
+  fake.transaction.oncomplete();await saving;assert.equal(done,true);
+ }finally{if(original)Object.defineProperty(globalThis,'navigator',original);else delete globalThis.navigator;delete globalThis.window;delete globalThis.indexedDB;}
+});
+
+
+test('saved manual photo deletions survive queue reload and malformed actions remain preserved',async()=>{
+ const {loadChallanQueue}=await import('../src/storage.js');
+ try{
+  const operation={key:'delete-photos-key',action:'deleteChallanPhotos',payload:{id:'saved-challan-id'}};
+  const fake=fakeDatabase(),loading=loadChallanQueue('sheet');await start();fake.request.result=[operation];fake.transaction.oncomplete();assert.deepEqual(await loading,[operation]);
+  const invalid=fakeDatabase(),reading=loadChallanQueue('sheet');await start();invalid.request.result=[{...operation,action:'unknown'}];invalid.transaction.oncomplete();await assert.rejects(reading,/preserved/);
+ }finally{delete globalThis.window;delete globalThis.indexedDB;}
+});
+
+
+test('recovery exports can read original malformed challan data without discarding it',async()=>{
+ const {loadChallanRecovery}=await import('../src/storage.js');
+ try{
+  const fake=fakeDatabase(),raw=[{key:'original',action:'unknown',payload:{id:'photo',data:'original-image'}}],loading=loadChallanRecovery('sheet');
+  await start();fake.request.result=raw;fake.transaction.oncomplete();assert.deepEqual(await loading,raw);
+ }finally{delete globalThis.window;delete globalThis.indexedDB;}
+});

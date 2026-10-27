@@ -1,5 +1,5 @@
 // Bind this script to your Google Sheet, run setup(), then deploy as a web app.
-const BACKEND_VERSION = '1.28.0';
+const BACKEND_VERSION = '1.30.4';
 const HEADERS = ['id','schemaVersion','transactionDate','transactionTime','timezone','direction','category','method','amountMinor','currency','party','notes','chequeDate','createdAt','metadata','deletedAt','updatedAt','revision','lastEditId','restoredAt','lastRestoreDeletedAt','recordType','cashReceivedMinor','cashChangeMinor','onlineChangeMinor','fromMethod','toMethod','expectedCashMinor','countedCashMinor','cashAdjustmentMinor','expectedOnlineMinor','countedOnlineMinor','onlineAdjustmentMinor','partyId','deleteReason','settlementDiscountMinor','invoiceId','cashPortionMinor','onlinePortionMinor'];
 
 function setup() {
@@ -122,8 +122,14 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   accountRequest_={startedAt:Date.now(),action:'unknown',lockWaitMs:0,reads:0,readMs:0,validationMs:0,writes:0,writeMs:0,tabs:new Map()};
   try {
-    if (!e || !e.postData || e.postData.contents.length > 100000) throw new Error('Invalid request.');
+    if (!e || !e.postData || e.postData.contents.length > 1200000) throw new Error('Invalid request.');
     const body = JSON.parse(e.postData.contents);requireAccess_(body);accountRequest_.action=body.action;
+    if(body.action!=='uploadChallanPhoto'&&e.postData.contents.length>100000)throw new Error('Invalid request size.');
+    if(body.action==='getChallanPhoto')return json_(challanAction_(body.action,body.transaction));
+    if(['listChallans','createChallan','uploadChallanPhoto','updateChallanRetention','deleteChallanPhotos'].includes(body.action)){
+      const started=Date.now();lock.waitLock(25000);accountRequest_.lockWaitMs+=Date.now()-started;
+      return json_(challanAction_(body.action,body.transaction));
+    }
     if(body.action==='verifyAccess')return json_({ok:true,accessVerified:true});
     if(body.action==='deletePayment'){if(!Number.isSafeInteger(body.transaction?._expectedRevision))throw new Error('Payment revision is required for bulk deletion.');body.action='delete';}
     if (body.action === 'list' || body.action === 'listDeleted') {
@@ -283,21 +289,23 @@ function refreshReport() {
 
 // Additive account schema. Revisions retain previous invoice and note snapshots.
 const ACCOUNT_HEADERS = {
-  StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt','status'],
-  StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt'],
+  PurchaseChallans:['id','name','autoDelete','createdAt','invoiceId','completedAt','photosDeletedAt','revision','lastEditId'],
+  ChallanPhotos:['id','challanId','fileId','name','mimeType','contentHash','createdAt','deletedAt'],
+  StockItemVersions:['id','operationId','stockItemId','revision','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt','status','displayUnit'],
+  StockItems:['id','operationId','sourceId','name','code','category','baseUnit','secondaryUnit','conversion','saleRateMinor','purchaseRateMinor','saleRateUnit','purchaseRateUnit','lowStock','createdAt','displayUnit'],
   StockMovements:['id','operationId','stockItemId','movementDate','quantity','unit','conversion','baseQuantity','invoiceId','invoiceItemId','reason','createdAt'],
   StockReviews:['id','operationId','invoiceId','invoiceRevision','invoiceItemId','status','reason'],
   StockOperations:['id','kind','payloadHash','openingDate','invoiceId','invoiceRevision','reversesId','createdAt','importMode','invoiceStockRevision','stockEntries','supersedesIds'],
   ItemCatalogue:['id','name','billingUnit','rateMinor','costMinor','saleRateMinor','purchaseRateMinor','updatedAt','sourceId','saleBillingUnit','purchaseBillingUnit','costBillingUnit'],
   Parties: ['id','schemaVersion','name','phone','address','openingDate','openingBalanceMinor','createdAt','updatedAt','revision','lastEditId','archivedAt','partyType'],
-  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot','stockRevision','autoRoundOff','roundOffMinor'],
+  Invoices: ['id','schemaVersion','partyId','partyName','partyPhone','partyAddress','type','invoiceNumber','invoiceDate','notes','currency','totalMinor','costTotalMinor','itemCount','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot','stockRevision','autoRoundOff','roundOffMinor','amountOnly','sourceChallanId'],
   InvoiceItems: ['id','invoiceId','description','quantityMilli','rateMinor','discountMinor','lineTotalMinor','costMinor','lineCostMinor','versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],
   InvoiceMeasurements:['id','invoiceId','itemId','description','lengthMilli','widthMilli','quantityMilli','pieces'],
   InvoiceHistory: ['id','invoiceId','revision','changedAt','editId','snapshot'],
   InvoiceNotes: ['id','schemaVersion','invoiceId','invoiceNumber','invoiceRevision','partyId','partyName','partyPhone','partyAddress','invoiceType','type','noteNumber','noteDate','reason','effect','amountMinor','costAdjustmentMinor','currency','status','createdAt','cancelledAt','cancelReason','revision','lastEditId','updatedAt','deletedAt','deleteReason'],
   InvoiceNoteHistory: ['id','noteId','revision','changedAt','editId','snapshot']
 };
-const ACCOUNT_OPTIONAL_HEADERS={StockOperations:['invoiceStockRevision','stockEntries','supersedesIds'],ItemCatalogue:['saleBillingUnit','purchaseBillingUnit','costBillingUnit'],Parties:['partyType'],Invoices:['autoRoundOff','roundOffMinor','stockRevision','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
+const ACCOUNT_OPTIONAL_HEADERS={StockItems:['displayUnit'],StockItemVersions:['displayUnit'],StockOperations:['invoiceStockRevision','stockEntries','supersedesIds'],ItemCatalogue:['saleBillingUnit','purchaseBillingUnit','costBillingUnit'],Parties:['partyType'],Invoices:['amountOnly','sourceChallanId','autoRoundOff','roundOffMinor','stockRevision','revision','lastEditId','updatedAt','itemVersion','deletedAt','deleteReason','challanNumber','discountMode','discountValue','invoiceDiscountMinor','walkIn','paymentId','paymentSnapshot'],InvoiceItems:['versionId','billingUnit','measurementUnit','measurementMode','measurementCount','itemNote'],InvoiceNotes:['lastEditId','updatedAt','deletedAt','deleteReason']};
 function accountSheet_(ss,name){
   const cached=accountRequest_?.tabs.get(name);if(cached?.db)return cached.db;
   const sheet=ss.getSheetByName(name)||ss.insertSheet(name);
@@ -379,6 +387,10 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
   accountId_(t.id); if(![undefined,null,'',false,true,'false','true'].includes(t.walkIn))throw new Error('Invalid walk-in invoice option.');const walkIn=t.walkIn===true||t.walkIn==='true';
   if(walkIn){if(t.type!=='sale'||t.partyId)throw new Error('Walk-in invoices must be sales without a saved party.');accountId_(t.paymentId);if(t.paymentId!==t.id+'-payment')throw new Error('Invalid walk-in payment link.');}else {accountId_(t.partyId);if(t.paymentId){accountId_(t.paymentId);if(t.paymentId!==t.id+'-payment')throw new Error('Invalid invoice payment link.');}}
   if (t.schemaVersion!==1 || t.currency!=='INR' || !['sale','purchase'].includes(t.type) || !validDate_(t.invoiceDate)) throw new Error('Invalid invoice details.');
+  if(![undefined,null,'',false,true,'false','true'].includes(t.amountOnly))throw new Error('Invalid amount-only option.');
+  const amountOnly=t.amountOnly===true||t.amountOnly==='true',sourceChallanId=t.sourceChallanId||'';
+  if((amountOnly||sourceChallanId)&&t.type!=='purchase')throw new Error('Challan links and amount-only entries require a purchase invoice.');
+  if(sourceChallanId)accountId_(sourceChallanId);
   const version=t.itemVersion||'';
   if(version)accountId_(version);
   const invoice={id:t.id,schemaVersion:1,partyId:t.partyId,type:t.type,invoiceNumber:allowBlankNumber && !t.invoiceNumber?'':accountText_(t.invoiceNumber,80,true),invoiceDate:t.invoiceDate,challanNumber:accountText_(t.challanNumber??'',80),notes:accountText_(t.notes,1000),currency:'INR',itemVersion:version};
@@ -400,6 +412,7 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
     return {id:item.id,invoiceId:t.id,description:accountText_(item.description,300,true),...(itemNote?{itemNote}:{}),quantityMilli:quantity,rateMinor:rate,discountMinor:discount,lineTotalMinor:lineTotal,costMinor:unitCost,lineCostMinor:lineCost,versionId:version,...(unit?{billingUnit:unit,measurementUnit:['sqft','rft'].includes(unit)?item.measurementUnit:'',measurementMode:item.measurementMode||'quantity',measurementCount:measurements.length,measurements:measurements.map(row=>({description:row.description.trim(),lengthMilli:['sqft','rft'].includes(unit)?row.lengthMilli:0,widthMilli:unit==='sqft'||item.measurementMode==='perimeter'?row.widthMilli:0,quantityMilli:['sqft','rft'].includes(unit)?0:row.quantityMilli,pieces:row.pieces}))}: {})};
   });
   if(items.reduce((sum,item)=>sum+(item.measurements?.length||0),0)>1000)throw new Error('An invoice supports at most 1,000 measurement rows.');
+  if(amountOnly&&(items.length!==1||items[0].description!=='Purchase amount (no item details)'||items[0].quantityMilli!==1000||items[0].billingUnit||items[0].discountMinor!==0||items[0].costMinor!==null))throw new Error('Amount-only purchases must contain only their total amount.');
   const discountMode=t.discountMode||'amount',discountValue=t.discountValue==null||t.discountValue===''?0:Number(t.discountValue);
   if(!['amount','percent'].includes(discountMode)||!Number.isSafeInteger(discountValue)||discountValue<0||discountValue>100000000000||discountMode==='percent'&&discountValue>10000)throw new Error('Invalid invoice discount.');
   const invoiceDiscountMinor=discountMode==='percent'?Number((BigInt(total)*BigInt(discountValue)+BigInt(5000))/BigInt(10000)):discountValue;
@@ -410,7 +423,7 @@ function normalizedInvoice_data_(t, allowBlankNumber=false) {
   const autoRoundOff=t.autoRoundOff===true||t.autoRoundOff==='true',rounded=autoRoundOff?Math.floor((total+50)/100)*100:total,roundOffMinor=rounded-total;
   if(t.invoiceRoundingSchemaVersion===1&&t.roundOffMinor!==roundOffMinor)throw new Error('Invoice round-off does not match its items and discount.');
   total=rounded;
-  Object.assign(invoice,{discountMode,discountValue,invoiceDiscountMinor,autoRoundOff,roundOffMinor,walkIn,paymentId:t.paymentId||''});
+  Object.assign(invoice,{amountOnly,sourceChallanId,discountMode,discountValue,invoiceDiscountMinor,autoRoundOff,roundOffMinor,walkIn,paymentId:t.paymentId||''});
   if (total<=0) throw new Error('Invoice total must be positive.');
   accountAmount_(total); accountAmount_(cost);
   return {...invoice,totalMinor:total,costTotalMinor:complete?cost:null,itemCount:items.length,items};
@@ -439,7 +452,7 @@ function accountInvoiceRecord_(invoice,allItems,measurementIndex){
   return {...record,detailToken:invoiceDetailToken_(record)};
 }
 
-function invoiceHeaderDefaults_(invoice){return {...invoice,autoRoundOff:invoice.autoRoundOff===true||invoice.autoRoundOff==='true',roundOffMinor:Number(invoice.roundOffMinor||0),discountMode:invoice.discountMode||'amount',discountValue:Number(invoice.discountValue||0),invoiceDiscountMinor:Number(invoice.invoiceDiscountMinor||0),walkIn:invoice.walkIn===true||invoice.walkIn==='true',paymentId:invoice.paymentId||''};}
+function invoiceHeaderDefaults_(invoice){return {...invoice,amountOnly:invoice.amountOnly===true||invoice.amountOnly==='true',sourceChallanId:invoice.sourceChallanId||'',autoRoundOff:invoice.autoRoundOff===true||invoice.autoRoundOff==='true',roundOffMinor:Number(invoice.roundOffMinor||0),discountMode:invoice.discountMode||'amount',discountValue:Number(invoice.discountValue||0),invoiceDiscountMinor:Number(invoice.invoiceDiscountMinor||0),walkIn:invoice.walkIn===true||invoice.walkIn==='true',paymentId:invoice.paymentId||''};}
 function visiblePayments_(ss,rows,invoices){
   if(!rows.some(row=>row.invoiceId))return rows;
   const committed=new Map((invoices||accountReadRows_(ss,'Invoices')).map(invoice=>[invoice.id,invoice]));
@@ -465,7 +478,7 @@ function stageInvoicePayment_(ss,payment){
 
 function catalogueKey_(name){return String(name).normalize('NFKC').trim().replace(/\s+/g,' ').toUpperCase();}
 function mergeCatalogueInvoice_(map,invoice){
-  if(invoice.status!=='issued')return;
+  if(invoice.status!=='issued'||invoice.amountOnly)return;
   const stamp=invoice.updatedAt||invoice.createdAt||'';
   for(const item of invoice.items||[]){
     const id=catalogueKey_(item.description),previous=map.get(id)||{};
@@ -489,6 +502,8 @@ function catalogueWriteChanges_(ss,table,values){
   accountAppendRows_(ss,'ItemCatalogue',additions);
 }
 function invoiceResult_(ss,record,extra={}){
+  let challanWarning='';
+  if(record.sourceChallanId){try{completeChallan_(ss,record);}catch(error){challanWarning='Purchase invoice saved. Refresh challans to confirm its completion status: '+error.message;}}
   record={...record,detailToken:invoiceDetailToken_(record)};
   let catalogue,catalogueWarning='';
   try{
@@ -496,7 +511,7 @@ function invoiceResult_(ss,record,extra={}){
     catalogueWriteChanges_(ss,table,[...map.values()]);
     catalogue=[...map.values()];
   }catch(error){catalogueWarning='Invoice saved; catalogue could not sync: '+error.message;}
-  return {ok:true,id:record.id,record,...extra,...(catalogue?{catalogue}:{}),...(catalogueWarning?{catalogueWarning}:{})};
+  return {ok:true,id:record.id,record,...extra,...(challanWarning?{challanWarning}:{}),...(catalogue?{catalogue}:{}),...(catalogueWarning?{catalogueWarning}:{})};
 }
 
 function accountAction_(action,t) {
@@ -567,6 +582,11 @@ function accountAction_(action,t) {
     if (!invoice.walkIn&&(!party || party.archivedAt)) throw new Error('Party not found or archived.');
     if (!invoice.walkIn&&t.invoiceDate<party.openingDate) throw new Error('Invoice date cannot predate the party opening balance date.');
     const invoices=accountRows_(ss,'Invoices'),existing=invoices.find(row=>row.id===t.id);
+    if(invoice.sourceChallanId){
+      const challan=accountRows_(ss,'PurchaseChallans').find(row=>row.id===invoice.sourceChallanId);
+      if(!challan||!existing&&(challan.photosDeletedAt||!accountReadRows_(ss,'ChallanPhotos').some(row=>row.challanId===challan.id&&!row.deletedAt)))throw new Error('Upload the challan photos before issuing its purchase invoice.');
+      if(challan.invoiceId&&challan.invoiceId!==t.id||invoices.some(row=>row.sourceChallanId===challan.id&&row.id!==t.id))throw new Error('This challan already has a purchase invoice. Open its saved invoice instead.');
+    }
     const allItems=accountRows_(ss,'InvoiceItems').filter(row=>row.invoiceId===t.id);
     const oldItems=allItems.filter(row=>!(row.versionId||''));
     if (oldItems.some(old=>!items.some(item=>item.id===old.id&&accountSame_(old,item,ACCOUNT_HEADERS.InvoiceItems)))) throw new Error('This invoice ID was already used for different items. Retry the original request.');
@@ -607,7 +627,8 @@ function accountAction_(action,t) {
     if(t.type!==existing.type||t.partyId!==existing.partyId||t.invoiceNumber!==existing.invoiceNumber)throw new Error('Invoice number, type and party cannot be changed.');
     const party=accountRows_(ss,'Parties').find(row=>row.id===t.partyId);
     if(!invoiceHeaderDefaults_(existing).walkIn&&(!party||t.invoiceDate<party.openingDate))throw new Error('Invoice date cannot predate the party opening balance date.');
-    const normalized=normalizedInvoice_({...t,itemVersion:t._editId,items:t.items.map((item,index)=>({...item,id:t.id+'-'+t._editId+'-'+(index+1),invoiceId:t.id}))});
+    if(invoiceHeaderDefaults_(existing).amountOnly&&t.amountOnlySchemaVersion!==1)throw new Error('Update the app before editing an amount-only purchase.');
+    const normalized=normalizedInvoice_({...t,sourceChallanId:existing.sourceChallanId||'',itemVersion:t._editId,items:t.items.map((item,index)=>({...item,id:t.id+'-'+t._editId+'-'+(index+1),invoiceId:t.id}))});
     if(Boolean(normalized.walkIn)!==invoiceHeaderDefaults_(existing).walkIn||normalized.paymentId!==(existing.paymentId||''))throw new Error('Invoice customer mode and payment link cannot be changed.');
     if(normalized.walkIn&&(normalized.totalMinor!==Number(existing.totalMinor)||normalized.invoiceDate!==existing.invoiceDate))throw new Error('Walk-in invoice amount/date are linked to its payment. Delete and reissue both records to change them. CP and item details can be edited without changing the total.');
     if(t.invoiceRoundingSchemaVersion!==1&&invoiceHeaderDefaults_(existing).autoRoundOff)throw new Error('Update the app before editing an invoice with auto round-off.');
@@ -632,6 +653,7 @@ function accountAction_(action,t) {
     if(t.measurementSchemaVersion!==1&&allItems.some(item=>(item.versionId||'')===(existing.itemVersion||'')&&item.billingUnit))throw new Error('Update the app before editing an invoice with billing units or measurements.');
     if(!Number.isSafeInteger(t._expectedRevision)||Number(existing.revision||0)!==t._expectedRevision){const error=new Error('Invoice changed on another device. Reload it before editing.');error.code='EDIT_CONFLICT';throw error;}
     if(accountRows_(ss,'InvoiceNotes').some(note=>note.invoiceId===t.id))throw new Error('This invoice has correction notes. Add a credit or debit note instead of editing the original.');
+    if(normalized.amountOnly&&!invoiceHeaderDefaults_(existing).amountOnly&&stockSnapshot_(ss).operations.some(op=>op.kind==='review'&&op.invoiceId===existing.id&&!op.reversed&&!op.superseded))throw new Error('Reverse this invoice’s stock updates before changing it to amount-only.');
     const previous=accountInvoiceRecord_(existing,allItems),changedAt=new Date().toISOString();
     // Stage immutable lines and the previous snapshot. Only the final header
     // switch commits this version; failed writes leave the prior invoice intact.
@@ -801,11 +823,18 @@ function billingQuantity_(item){
       let value;
       if(unit==='sqft'){if(!positive(row.lengthMilli)||!positive(row.widthMilli))throw new Error('Enter valid length and width.');value=BigInt(row.lengthMilli)*BigInt(row.widthMilli);}
       else if(unit==='rft'){if(!positive(row.lengthMilli)||mode==='perimeter'&&!positive(row.widthMilli))throw new Error('Enter valid frame dimensions or length.');value=mode==='perimeter'?BigInt(2)*(BigInt(row.lengthMilli)+BigInt(row.widthMilli)):BigInt(row.lengthMilli);}
-      else {if(!positive(row.quantityMilli))throw new Error('Enter a valid weight or quantity.');value=BigInt(row.quantityMilli);}
+      else {if(!(unit==='kg'?Number.isSafeInteger(row.quantityMilli)&&row.quantityMilli!==0&&Math.abs(row.quantityMilli)<=1000000000:positive(row.quantityMilli)))throw new Error('Enter a valid weight or quantity.');value=BigInt(row.quantityMilli);}
       numerator+=value*BigInt(row.pieces);
     }
   }else{if(!Number.isSafeInteger(item.quantityMilli)||item.quantityMilli<=0||item.quantityMilli>1000000000)throw new Error('Enter a valid item quantity.');numerator=BigInt(item.quantityMilli);}
-  if(numerator<=BigInt(0)||numerator>BigInt(1000000)*denominator)throw new Error('Total item quantity must be positive and no greater than 1,000,000.');
+  if(numerator<=BigInt(0)||numerator>BigInt(1000000)*denominator){
+    if(unit==='kg'&&rows.length){
+      const magnitude=numerator<BigInt(0)?-numerator:numerator;
+      const net=(numerator<BigInt(0)?'-':'')+(magnitude/BigInt(1000)).toString()+((magnitude%BigInt(1000))?'.'+(magnitude%BigInt(1000)).toString().padStart(3,'0').replace(/0+$/,''):'');
+      throw new Error(`This KG group totals ${net} kg (each weight × Pieces). ${numerator<=BigInt(0)?'Returns must be less than the added weight in this group. Put the positive and return rows in the same KG group.':'The net weight must not exceed 1,000,000 kg.'}`);
+    }
+    throw new Error('Total item quantity must be positive and no greater than 1,000,000.');
+  }
   return {numerator,denominator,quantityMilli:Number((numerator*BigInt(1000)+denominator/BigInt(2))/denominator)};
 }
 function billingPrice_(rate,quantity){
@@ -844,7 +873,7 @@ function stockDecimal_(value,signed=false){
 function stockText_(value){const n=BigInt(value),a=n<0?-n:n,rest=a%STOCK_SCALE_;return (n<0?'-':'')+String(a/STOCK_SCALE_)+(rest?'.'+String(rest).padStart(8,'0').replace(/0+$/,''):'');}
 function stockConvert_(quantity,factor){const product=stockDecimal_(quantity,true)*stockDecimal_(factor);if(product%STOCK_SCALE_)throw new Error('Stock conversion exceeds 8 decimal places.');const value=stockText_(product/STOCK_SCALE_);stockDecimal_(value,true);return value;}
 function stockCanonical_(value){if(Array.isArray(value))return value.map(stockCanonical_);if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stockCanonical_(value[key])]));return value;}
-function invoiceDetailToken_(invoice){const header=['status','invoiceNumber','invoiceDate','partyId','partyName','partyPhone','partyAddress','type','notes','challanNumber','discountMode','discountValue','invoiceDiscountMinor','autoRoundOff','roundOffMinor','totalMinor','costTotalMinor','paymentId','walkIn','itemVersion','updatedAt','stockRevision'].map(key=>[key,String(invoice[key]??'')]);return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify({header,items:invoice.items})).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join('')+':'+Number(invoice.revision||0);}
+function invoiceDetailToken_(invoice){const header=['status','invoiceNumber','invoiceDate','partyId','partyName','partyPhone','partyAddress','type','notes','challanNumber','discountMode','discountValue','invoiceDiscountMinor','autoRoundOff','roundOffMinor','totalMinor','costTotalMinor','paymentId','walkIn','amountOnly','sourceChallanId','itemVersion','updatedAt','stockRevision'].map(key=>[key,String(invoice[key]??'')]);return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,JSON.stringify({header,items:invoice.items})).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join('')+':'+Number(invoice.revision||0);}
 function invoiceStockKey_(invoice){return JSON.stringify({type:invoice.type,items:(invoice.items||[]).map(item=>({description:item.description,quantityMilli:item.quantityMilli,billingUnit:item.billingUnit||'nos',measurementUnit:item.measurementUnit||'',measurementMode:item.measurementMode||'',measurements:(item.measurements||[]).map(row=>({description:row.description||'',lengthMilli:row.lengthMilli||0,widthMilli:row.widthMilli||0,quantityMilli:row.quantityMilli||0,pieces:row.pieces||0}))}))});}
 function stockReviewMatches_(op,invoice){return op.invoiceStockRevision!==''&&op.invoiceStockRevision!=null&&invoice.stockRevision!==''&&invoice.stockRevision!=null?Number(op.invoiceStockRevision)===Number(invoice.stockRevision):Number(op.invoiceRevision)===Number(invoice.revision||0);}
 function stockEntries_(op,movements){return Array.isArray(op.stockEntries)?op.stockEntries:movements.filter(row=>row.operationId===op.id);}
@@ -868,7 +897,8 @@ function stockItem_(input,operationId){
   const conversion=secondaryUnit?stockText_(stockDecimal_(input.conversion)):'1';if(stockDecimal_(conversion)<=0)throw new Error('Conversion must be positive.');
   const lowStock=input.lowStock===''||input.lowStock==null?'':stockText_(stockDecimal_(input.lowStock));
   const saleRateUnit=input.saleRateUnit||baseUnit,purchaseRateUnit=input.purchaseRateUnit||baseUnit;if([saleRateUnit,purchaseRateUnit].some(unit=>unit!==baseUnit&&unit!==secondaryUnit))throw new Error('Choose the units for sale and purchase prices.');
-  return {id:input.id,operationId,saleRateUnit,purchaseRateUnit,sourceId:accountText_(input.sourceId||'',100),name:accountText_(input.name,300,true).toUpperCase(),code:accountText_(input.code||'',100),category:accountText_(input.category||'',100),baseUnit,secondaryUnit,conversion,lowStock,saleRateMinor:accountAmount_(input.saleRateMinor||0),purchaseRateMinor:accountAmount_(input.purchaseRateMinor||0)};
+  const displayUnit=input.displayUnit||baseUnit;if(displayUnit!==baseUnit&&displayUnit!==secondaryUnit)throw new Error('Choose a default display unit from the base or secondary unit.');
+  return {id:input.id,operationId,displayUnit,saleRateUnit,purchaseRateUnit,sourceId:accountText_(input.sourceId||'',100),name:accountText_(input.name,300,true).toUpperCase(),code:accountText_(input.code||'',100),category:accountText_(input.category||'',100),baseUnit,secondaryUnit,conversion,lowStock,saleRateMinor:accountAmount_(input.saleRateMinor||0),purchaseRateMinor:accountAmount_(input.purchaseRateMinor||0)};
 }
 function stockStage_(ss,name,rows){
   const table=accountTable_(ss,name),missing=[];
@@ -935,7 +965,7 @@ function stockAction_(action,t){
     if(!existing||existing.status==='deleted'||!Number.isSafeInteger(expectedRevision)||existing.revision!==expectedRevision)throw new Error('Stock item changed. Refresh and edit its latest settings.');
     if(input.baseUnit!==existing.baseUnit&&existing.baseUnit!=='UNIT')throw new Error('Base unit cannot change after an item is created. Add a separate stock item for another base unit.');
     if(existing.baseUnit==='UNIT'&&input.baseUnit!=='UNIT'&&['PCS','NOS'].includes(input.baseUnit)&&stockDecimal_(existing.balance,true)%STOCK_SCALE_)throw new Error('The exported quantity is fractional. Assign its actual source unit, such as BOX, PACKET or KG, rather than changing it to pieces.');
-    const normalized=stockItem_({...input,sourceId:existing.sourceId},t.id);
+    const normalized=stockItem_({...input,displayUnit:existing.baseUnit==='UNIT'&&input.baseUnit!=='UNIT'&&input.displayUnit==='UNIT'?input.baseUnit:input.displayUnit,sourceId:existing.sourceId},t.id);
     if(snapshot.items.some(item=>item.id!==existing.id&&catalogueKey_(item.name)===catalogueKey_(normalized.name)&&catalogueKey_(item.code)===catalogueKey_(normalized.code)))throw new Error('Another stock item already uses this name/model.');
     const {id,sourceId,operationId,...fields}=normalized;
     versions.push({id:t.id+'-item'+(versions.length+1),operationId:t.id,stockItemId:existing.id,revision:existing.revision+1,...fields,status:action==='deleteStockItems'?'deleted':'active',createdAt:now});operation.kind=action==='deleteStockItems'?'item-delete':'item-edit';
@@ -943,6 +973,7 @@ function stockAction_(action,t){
   }else if(action==='adjustInvoiceStock'){
     const invoice=accountRows_(ss,'Invoices').find(row=>row.id===t.invoiceId);
     if(!invoice||invoice.status!=='issued'||Number(invoice.revision||0)!==t.invoiceRevision)throw new Error('Invoice changed. Refresh before adjusting stock.');
+    if(challanBoolean_(invoice.amountOnly))throw new Error('Amount-only purchases do not update stock quantities.');
     const previousReviews=snapshot.operations.filter(op=>op.kind==='review'&&op.invoiceId===invoice.id&&!op.reversed&&!op.superseded);
     const ids=previousReviews.map(op=>op.id).sort();
     if(!ids.length||!Array.isArray(t.supersedesIds)||JSON.stringify(ids)!==JSON.stringify([...new Set(t.supersedesIds)].sort()))throw new Error('The stock review changed. Refresh before adjusting it.');
@@ -956,6 +987,7 @@ function stockAction_(action,t){
     desired.forEach(row=>after.set(row.stockItemId,(after.get(row.stockItemId)||BigInt(0))+stockDecimal_(row.baseQuantity,true)));
     for(const id of new Set([...before.keys(),...after.keys()])){const delta=(after.get(id)||BigInt(0))-(before.get(id)||BigInt(0));if(!delta)continue;const item=itemsById.get(id);if(!item)throw new Error('Original stock item is missing.');const quantity=stockText_(delta);stockDecimal_(quantity,true);movements.push({id:t.id+'-m'+(movements.length+1),operationId:t.id,stockItemId:id,movementDate:t.movementDate,quantity,unit:item.baseUnit,conversion:'1',baseQuantity:quantity,invoiceId:invoice.id,invoiceItemId:'',reason,createdAt:now});}
     updatePrices();operation.kind='review';operation.invoiceId=invoice.id;operation.invoiceRevision=t.invoiceRevision;operation.invoiceStockRevision=invoice.stockRevision??'';operation.stockEntries=JSON.stringify(desired);operation.supersedesIds=JSON.stringify(ids);
+    if(challanBoolean_(invoice.amountOnly))throw new Error('Amount-only purchases do not update stock quantities.');
     const invoiceItems=accountRows_(ss,'InvoiceItems').filter(item=>item.invoiceId===invoice.id&&(item.versionId||'')===(invoice.itemVersion||''));
     invoiceItems.forEach((item,index)=>reviews.push({id:t.id+'-r'+(index+1),operationId:t.id,invoiceId:invoice.id,invoiceRevision:t.invoiceRevision,invoiceItemId:item.id,status:desired.length?'updated':'no-impact',reason}));
   }else if(action==='recordStock'){
@@ -967,6 +999,7 @@ function stockAction_(action,t){
     const invoice=accountRows_(ss,'Invoices').find(row=>row.id===t.invoiceId);
     if(!invoice||invoice.status!=='issued'||Number(invoice.revision||0)!==t.invoiceRevision||invoice.invoiceDate<snapshot.openingDate)throw new Error('Invoice changed or predates opening stock. Refresh and review it.');
     if(snapshot.operations.some(op=>op.kind==='review'&&op.invoiceId===invoice.id&&!op.reversed&&!op.superseded&&!stockReviewMatches_(op,invoice)))throw new Error('Reverse the previous stock updates before reviewing this edited invoice.');
+    if(challanBoolean_(invoice.amountOnly))throw new Error('Amount-only purchases do not update stock quantities.');
     const invoiceItems=accountRows_(ss,'InvoiceItems').filter(item=>item.invoiceId===invoice.id&&(item.versionId||'')===(invoice.itemVersion||''));
     if(snapshot.operations.some(op=>op.kind==='review'&&op.invoiceId===invoice.id&&!op.reversed&&!op.superseded&&stockReviewMatches_(op,invoice))&&snapshot.reviews.filter(row=>row.invoiceId===invoice.id).length>=invoiceItems.length)throw new Error('This invoice is already reviewed. Use a stock adjustment to correct it.');
     const allowed=new Set(invoiceItems.map(item=>item.id)),handled=new Set(snapshot.reviews.filter(row=>row.invoiceId===invoice.id&&Number(row.invoiceRevision)===t.invoiceRevision).map(row=>row.invoiceItemId));
@@ -1014,4 +1047,180 @@ function stockAction_(action,t){
   stockStage_(ss,'StockItems',items);stockStage_(ss,'StockItemVersions',versions);stockStage_(ss,'StockMovements',movements);stockStage_(ss,'StockReviews',reviews);
   SpreadsheetApp.flush();accountWrite_(ss,'StockOperations',operation);SpreadsheetApp.flush();
   return {ok:true,id:t.id,stock:stockSnapshot_(ss)};
+}
+
+// Purchase challans: private Drive photos, ledger-owned references and opt-in retention.
+function challanBoolean_(value){return value===true||value==='true';}
+function challanFolder_(){
+  const id=PropertiesService.getScriptProperties().getProperty('LEDGER_CHALLAN_FOLDER_ID');
+  if(!id)throw new Error('Run setupChallanStorage() in Apps Script and authorize Drive access before uploading challans.');
+  return DriveApp.getFolderById(id);
+}
+// Editor setup logs a named step before every Google service call. If Google
+// fails before the first log/Execution entry, authorization or the editor failed
+// before this function could run; JavaScript cannot catch that platform failure.
+function challanSetupStep_(name,task){
+  console.info('Challan setup — '+name);
+  try{return task();}
+  catch(error){const message='Challan setup failed at '+name+': '+(error.message||String(error));console.error(message);throw new Error(message);}
+}
+function setupChallanStorage(){
+  // Request missing granular consents before calling Drive or modifying tabs.
+  // Keep this outside error wrappers so the editor can show Google's consent UI.
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL,[
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets'
+  ]);
+  console.info('Starting challan photo storage setup.');
+  const lock=LockService.getScriptLock();let acquired=false;
+  try{
+    challanSetupStep_('wait for other ledger requests',()=>lock.waitLock(10000));acquired=true;
+    const properties=PropertiesService.getScriptProperties();
+    const ss=challanSetupStep_('open the connected spreadsheet',()=>spreadsheet_());
+    // Only the affected tabs need setup; avoid formatting every ledger tab.
+    challanSetupStep_('prepare challan and invoice headers',()=>['PurchaseChallans','ChallanPhotos','Invoices'].forEach(name=>accountSheet_(ss,name)));
+    const existing=properties.getProperty('LEDGER_CHALLAN_FOLDER_ID');
+    if(existing){
+      challanSetupStep_('open the existing private Drive folder',()=>{
+        const folder=DriveApp.getFolderById(existing);folder.getName();
+        if(folder.isTrashed())throw new Error('Restore the challan folder from Drive Trash, then run this function again.');
+      });
+    }else{
+      const folder=challanSetupStep_('create the private Drive folder',()=>DriveApp.createFolder('Royal Furnitures — Purchase challans — '+ss.getId()));
+      challanSetupStep_('save the Drive folder reference',()=>properties.setProperty('LEDGER_CHALLAN_FOLDER_ID',folder.getId()));
+    }
+    challanSetupStep_('save spreadsheet changes',()=>SpreadsheetApp.flush());
+  }finally{if(acquired)lock.releaseLock();}
+  // A trigger-permission/quota failure must not prevent photo uploads. The
+  // optional deletion checkbox remains disabled until installation succeeds.
+  try{
+    setupChallanCleanup();
+    console.info('Challan photo storage and daily cleanup are ready. Return to the app and click Check setup again.');
+    return {storageReady:true,cleanupReady:true};
+  }catch(error){
+    console.warn('Photo storage is ready; automatic cleanup could not be enabled. Uploads work with 30-day deletion unchecked. Run setupChallanCleanup() separately. '+error.message);
+    return {storageReady:true,cleanupReady:false,cleanupError:error.message};
+  }
+}
+function setupChallanCleanup(){
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL,[
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/script.scriptapp'
+  ]);
+  console.info('Starting optional challan cleanup setup.');
+  const lock=LockService.getScriptLock();let acquired=false;
+  try{
+    challanSetupStep_('wait to install the cleanup schedule',()=>lock.waitLock(10000));acquired=true;
+    const properties=PropertiesService.getScriptProperties();
+    if(!properties.getProperty('LEDGER_CHALLAN_FOLDER_ID'))throw new Error('Run setupChallanStorage() to create private photo storage first.');
+    properties.setProperty('LEDGER_CHALLAN_CLEANUP_READY','false');
+    const installed=challanSetupStep_('check existing cleanup triggers',()=>ScriptApp.getProjectTriggers().some(trigger=>trigger.getHandlerFunction()==='cleanupChallanPhotos'));
+    if(!installed)challanSetupStep_('install the daily cleanup trigger',()=>ScriptApp.newTrigger('cleanupChallanPhotos').timeBased().everyDays(1).atHour(3).inTimezone('Asia/Kolkata').create());
+    properties.setProperty('LEDGER_CHALLAN_CLEANUP_READY','true');
+    console.info('Optional cleanup is ready. Only checked, completed challans older than 30 days are eligible.');
+    return {cleanupReady:true};
+  }finally{if(acquired)lock.releaseLock();}
+}
+function challanHash_(data){return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,data).map(byte=>('0'+(byte&255).toString(16)).slice(-2)).join('');}
+function ownedChallanFile_(photo){
+  const file=DriveApp.getFileById(photo.fileId),parents=file.getParents(),folder=challanFolder_().getId();let owned=false;
+  while(parents.hasNext())if(parents.next().getId()===folder)owned=true;
+  if(!owned||file.getName()!=='rf-challan-'+photo.id+'.jpg')throw new Error('The challan photo was moved or its Drive reference changed. Review its private folder.');
+  return file;
+}
+function completeChallan_(ss,invoice,previous=accountRows_(ss,'PurchaseChallans').find(row=>row.id===invoice.sourceChallanId)){
+  if(!previous)throw new Error('Challan record not found. Retry to confirm the saved invoice.');
+  if(previous.invoiceId&&previous.invoiceId!==invoice.id)throw new Error('This challan is already linked to another invoice.');
+  if(previous.invoiceId&&previous.completedAt&&(!challanBoolean_(invoice.amountOnly)||!challanBoolean_(previous.autoDelete)))return previous;
+  const record={...previous,autoDelete:challanBoolean_(invoice.amountOnly)?false:challanBoolean_(previous.autoDelete),invoiceId:invoice.id,completedAt:previous.completedAt||invoice.createdAt,revision:Number(previous.revision||0)+1};
+  accountWrite_(ss,'PurchaseChallans',record,true);return record;
+}
+function reconcileChallans_(ss){
+  const invoicesByChallan=new Map();
+  for(const invoice of accountRows_(ss,'Invoices'))if(invoice.sourceChallanId&&!invoicesByChallan.has(invoice.sourceChallanId))invoicesByChallan.set(invoice.sourceChallanId,invoice);
+  for(const row of accountRows_(ss,'PurchaseChallans')){
+    const invoice=invoicesByChallan.get(row.id);
+    if(invoice)completeChallan_(ss,invoice,row);
+  }
+  return invoicesByChallan;
+}
+function trashChallanPhotos_(ss,challan,photos=accountRows_(ss,'ChallanPhotos')){
+  for(const photo of photos.filter(row=>row.challanId===challan.id&&!row.deletedAt)){
+    const file=ownedChallanFile_(photo);if(!file.isTrashed())file.setTrashed(true);
+    // Persist only after Drive confirms. Interrupted deletion can safely resume.
+    accountWrite_(ss,'ChallanPhotos',{...photo,deletedAt:new Date().toISOString()},true);
+  }
+  accountWrite_(ss,'PurchaseChallans',{...challan,autoDelete:false,photosDeletedAt:new Date().toISOString(),revision:Number(challan.revision||0)+1},true);
+}
+function challanAction_(action,t){
+  const ss=spreadsheet_();
+  if(action==='listChallans'){
+    // No tabs/Drive permissions are required just to inspect an older ledger.
+    const invoicesByChallan=ss.getSheetByName('PurchaseChallans')?reconcileChallans_(ss):new Map(),photosByChallan=new Map();
+    for(const photo of accountRows_(ss,'ChallanPhotos')){
+      if(!photosByChallan.has(photo.challanId))photosByChallan.set(photo.challanId,[]);
+      photosByChallan.get(photo.challanId).push({id:photo.id,name:photo.name,deletedAt:photo.deletedAt||''});
+    }
+    return {ok:true,storageReady:Boolean(PropertiesService.getScriptProperties().getProperty('LEDGER_CHALLAN_FOLDER_ID')),cleanupReady:PropertiesService.getScriptProperties().getProperty('LEDGER_CHALLAN_CLEANUP_READY')==='true',challans:accountRows_(ss,'PurchaseChallans').map(row=>({...row,autoDelete:challanBoolean_(row.autoDelete),amountOnly:challanBoolean_(invoicesByChallan.get(row.id)?.amountOnly),revision:Number(row.revision||0),photos:photosByChallan.get(row.id)||[]}))};
+  }
+  if(!t||typeof t!=='object')throw new Error('Missing challan request.');accountId_(t.id);
+  if(action==='createChallan'){
+    challanFolder_();if(typeof t.autoDelete!=='boolean')throw new Error('Choose whether to automatically delete completed photos.');
+    const name=accountText_(t.name,150,true),existing=accountRows_(ss,'PurchaseChallans').find(row=>row.id===t.id);
+    if(existing){if(existing.name!==name||challanBoolean_(existing.autoDelete)!==t.autoDelete)throw new Error('Retry the original challan request.');return {ok:true,id:t.id,record:existing};}
+    const record={id:t.id,name,autoDelete:t.autoDelete,createdAt:new Date().toISOString(),invoiceId:'',completedAt:'',photosDeletedAt:'',revision:0,lastEditId:''};accountWrite_(ss,'PurchaseChallans',record);return {ok:true,id:t.id,record};
+  }
+  if(action==='deleteChallanPhotos'){
+    const current=accountRows_(ss,'PurchaseChallans').find(row=>row.id===t.id);
+    if(!current)throw new Error('Challan not found.');
+    if(!current.invoiceId)throw new Error('Save the linked purchase invoice before deleting its photos.');
+    if(current.photosDeletedAt)return {ok:true,id:t.id};
+    trashChallanPhotos_(ss,current);
+    return {ok:true,id:t.id};
+  }
+  if(action==='updateChallanRetention'){
+    accountId_(t._editId);if(typeof t.autoDelete!=='boolean')throw new Error('Choose the photo retention option.');
+    const current=accountRows_(ss,'PurchaseChallans').find(row=>row.id===t.id);if(!current)throw new Error('Challan not found.');
+    if(current.lastEditId===t._editId){if(challanBoolean_(current.autoDelete)!==t.autoDelete)throw new Error('Retry the original retention request.');return {ok:true,id:t.id,record:current};}
+    if(!Number.isSafeInteger(t._expectedRevision)||Number(current.revision||0)!==t._expectedRevision)throw new Error('Challan changed. Refresh before changing retention.');
+    if(t.autoDelete&&accountRows_(ss,'Invoices').some(invoice=>invoice.sourceChallanId===t.id&&challanBoolean_(invoice.amountOnly)))throw new Error('Amount-only purchase photos are kept until you delete them manually.');
+    if(current.photosDeletedAt&&t.autoDelete)throw new Error('These photos have already been removed.');
+    const record={...current,autoDelete:t.autoDelete,revision:Number(current.revision||0)+1,lastEditId:t._editId};accountWrite_(ss,'PurchaseChallans',record,true);return {ok:true,id:t.id,record};
+  }
+  if(action==='getChallanPhoto'){
+    const photo=accountReadRows_(ss,'ChallanPhotos').find(row=>row.id===t.id&&row.challanId===t.challanId);
+    if(!photo||photo.deletedAt)throw new Error('This challan photo is no longer available.');
+    const file=ownedChallanFile_(photo);if(file.isTrashed())throw new Error('This challan photo is in Drive Trash.');
+    return {ok:true,id:t.id,data:Utilities.base64Encode(file.getBlob().getBytes()),mimeType:'image/jpeg'};
+  }
+  if(action==='uploadChallanPhoto'){
+    accountId_(t.challanId);const name=accountText_(t.name,150,true);
+    if(t.mimeType!=='image/jpeg'||typeof t.data!=='string'||t.data.length>1100000||!/^\/9j\/[A-Za-z0-9+/]*={0,2}$/.test(t.data))throw new Error('Upload a JPEG photo smaller than 800 KB.');
+    const bytes=Utilities.base64Decode(t.data);if(bytes.length>800000||bytes.length<4||(bytes[0]&255)!==255||(bytes[1]&255)!==216)throw new Error('Invalid challan photo.');
+    const contentHash=challanHash_(bytes),existing=accountRows_(ss,'ChallanPhotos').find(row=>row.id===t.id);
+    if(existing){if(existing.challanId!==t.challanId||existing.contentHash!==contentHash||existing.name!==name)throw new Error('Retry this photo using its original image and ID.');return {ok:true,id:t.id};}
+    const challan=accountRows_(ss,'PurchaseChallans').find(row=>row.id===t.challanId);
+    if(!challan||challan.invoiceId||challan.photosDeletedAt)throw new Error('Photos can only be added to an unfinished challan.');
+    if(accountRows_(ss,'ChallanPhotos').filter(row=>row.challanId===challan.id).length>=10)throw new Error('A challan supports at most 10 photos.');
+    const folder=challanFolder_(),fileName='rf-challan-'+t.id+'.jpg',candidates=folder.getFilesByName(fileName);
+    const file=candidates.hasNext()?candidates.next():folder.createFile(Utilities.newBlob(bytes,'image/jpeg',fileName));
+    if(file.isTrashed()||challanHash_(file.getBlob().getBytes())!==contentHash)throw new Error('This photo ID already belongs to another image.');
+    accountWrite_(ss,'ChallanPhotos',{id:t.id,challanId:t.challanId,fileId:file.getId(),name,mimeType:'image/jpeg',contentHash,createdAt:new Date().toISOString(),deletedAt:''});return {ok:true,id:t.id};
+  }
+  throw new Error('Unsupported challan action.');
+}
+function cleanupChallanPhotos(){
+  const lock=LockService.getScriptLock();if(!lock.tryLock(1000))return;
+  accountRequest_={startedAt:Date.now(),action:'cleanupChallanPhotos',lockWaitMs:0,reads:0,readMs:0,validationMs:0,writes:0,writeMs:0,tabs:new Map()};
+  try{
+    const ss=spreadsheet_();reconcileChallans_(ss);const now=Date.now(),photos=accountRows_(ss,'ChallanPhotos');
+    const amountOnlyLinks=new Set(accountRows_(ss,'Invoices').filter(invoice=>challanBoolean_(invoice.amountOnly)).map(invoice=>invoice.sourceChallanId));
+    const eligible=accountRows_(ss,'PurchaseChallans').filter(row=>!amountOnlyLinks.has(row.id)&&challanBoolean_(row.autoDelete)&&row.invoiceId&&row.completedAt&&!row.photosDeletedAt&&Number.isFinite(Date.parse(row.completedAt))&&now-Date.parse(row.completedAt)>=30*86400000).slice(0,10);
+    for(const challan of eligible){
+      try{
+      trashChallanPhotos_(ss,challan,photos);
+      }catch(error){console.error('Challan cleanup needs review: '+challan.id+' '+error.message);}
+    }
+  }finally{accountRequest_=null;lock.releaseLock();}
 }

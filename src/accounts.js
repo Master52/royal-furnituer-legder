@@ -1,3 +1,4 @@
+import {randomUUID} from './uuid.js';
 import {blankCheckout} from './invoiceCheckout.js';
 import {MAX_MINOR,minor,invoiceDiscount,invoiceRounding} from './invoiceAmounts.js';
 import {scaledInput,draftMeasurements,billingQuantity_,billingPrice_,measurementDraftFromItem} from './measurements.js';
@@ -9,9 +10,9 @@ export function validDate(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 }
 export const blankItem = () => ({ description: '', quantity: '1', rate: '', discount: '0', cost: '',itemNote:'',grouped:false,billingUnit:'',measurementUnit:'feet',measurementMode:'quantity',measurements:[] });
-export const blankInvoice = () => ({ partyId: '', walkIn:false, paymentWithInvoice:false, discountMode:'amount', discount:'0', autoRoundOff:false, checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
+export const blankInvoice = () => ({ partyId: '', walkIn:false, amountOnly:false,purchaseAmount:'',sourceChallanId:'', paymentWithInvoice:false, discountMode:'amount', discount:'0', autoRoundOff:false, checkout:blankCheckout(), type: 'sale', invoiceNumber: '', challanNumber:'', invoiceDate: localNow().slice(0, 10), notes: '', items: [blankItem()] });
 export const PARTY_TYPES = {customer:'Customer',supplier:'Supplier',lead:'Lead',karigar:'Karigar',both:'Customer & Supplier'};
-export function makeParty(form, id = crypto.randomUUID()) {
+export function makeParty(form, id = randomUUID()) {
   const partyType=form.partyType||'';
   if(partyType&&!Object.hasOwn(PARTY_TYPES,partyType))throw new Error('Choose a valid party type.');
   const name = form.name.trim();
@@ -19,7 +20,13 @@ export function makeParty(form, id = crypto.randomUUID()) {
   if (!validDate(form.openingDate)) throw new Error('Choose the opening balance date.');
   return { id, schemaVersion: 1, name, partyType, phone: form.phone.trim(), address: form.address.trim(), openingDate: form.openingDate, openingBalanceMinor: minor(form.openingBalance || '0', 'opening balance') * (form.openingDirection === 'payable' ? -1 : 1) };
 }
-export function makeInvoice(form, id = crypto.randomUUID()) {
+export function makeInvoice(form, id = randomUUID()) {
+  if(form.amountOnly){
+    if(form.type!=='purchase')throw new Error('Amount-only entry is available for purchase invoices.');
+    const amount=minor(form.purchaseAmount,'purchase amount');if(amount<=0)throw new Error('Enter a positive purchase amount.');
+    form={...form,items:[{...blankItem(),description:'Purchase amount (no item details)',quantity:'1',rate:String(amount/100)}]};
+  }
+  if(form.sourceChallanId&&form.type!=='purchase')throw new Error('A captured challan requires a purchase invoice.');
   if ((!form.partyId&&!form.walkIn) || !['sale', 'purchase'].includes(form.type) || form.walkIn&&form.type!=='sale') throw new Error('Choose a party and invoice type.');
   if (form.invoiceNumber && form.invoiceNumber.trim().length > 80) throw new Error('Invoice number is too long.');
   if(typeof (form.challanNumber??'')!=='string'||(form.challanNumber??'').trim().length>80)throw new Error('Challan number must be at most 80 characters.');
@@ -32,7 +39,9 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
     const itemNote=(item.itemNote||'').trim();
     if (!description || description.length > 300) throw new Error(`Enter a description for item ${index + 1}.`);
     const measurements=draftMeasurements(item),unit=item.billingUnit||'';
-    const quantity=billingQuantity_({...item,quantityMilli:measurements.length?0:scaledInput(item.quantity,'Quantity'),measurements});
+    let quantity;
+    try{quantity=billingQuantity_({...item,quantityMilli:measurements.length?0:scaledInput(item.quantity,'Quantity'),measurements});}
+    catch(error){throw new Error(`Item ${index+1} (${description}): ${error.message}`);}
     const quantityMilli=quantity.quantityMilli;
     const rateMinor = minor(item.rate, 'rate'), discountMinor = minor(item.discount || '0', 'line discount');
     const lineTotalMinor = billingPrice_(rateMinor,quantity) - discountMinor;
@@ -49,7 +58,7 @@ export function makeInvoice(form, id = crypto.randomUUID()) {
   totalMinor-=discount.invoiceDiscountMinor;
   const rounding=invoiceRounding(totalMinor,form.autoRoundOff??false);
   totalMinor=rounding.totalMinor;
-  return { id, schemaVersion: 1, invoiceDiscountSchemaVersion:1,...discount,invoiceRoundingSchemaVersion:1,...rounding,invoicePaymentSchemaVersion:1,...(form.walkIn?{walkIn:true}:{}),...(form.walkIn||form.paymentWithInvoice||form.paymentId===`${id}-payment`?{paymentId:`${id}-payment`}:{}), measurementSchemaVersion: 1, itemDescriptionSchemaVersion: 1, partyId: form.walkIn?'':form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
+  return { id, schemaVersion: 1,amountOnlySchemaVersion:1,amountOnly:Boolean(form.amountOnly),sourceChallanId:form.sourceChallanId||'', invoiceDiscountSchemaVersion:1,...discount,invoiceRoundingSchemaVersion:1,...rounding,invoicePaymentSchemaVersion:1,...(form.walkIn?{walkIn:true}:{}),...(form.walkIn||form.paymentWithInvoice||form.paymentId===`${id}-payment`?{paymentId:`${id}-payment`}:{}), measurementSchemaVersion: 1, itemDescriptionSchemaVersion: 1, partyId: form.walkIn?'':form.partyId, type: form.type, invoiceNumber: '', challanNumber:(form.challanNumber||'').trim(), invoiceDate: form.invoiceDate, notes: form.notes.trim(), currency: 'INR', totalMinor, costTotalMinor: completeCost ? costTotalMinor : null, items };
 }
 
 export function findParties(parties, query, limit = 8) {
@@ -156,13 +165,13 @@ export function accountBalances(parties,invoices,transactions,notes=[]){
   return [...rows.values()].map(row=>({...row,balance:row.error?null:row.balance}));
 }
 export function invoiceDraftFromRecord(saved){
-  return {...blankInvoice(),partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',autoRoundOff:saved.autoRoundOff===true||saved.autoRoundOff==='true',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{cashPortion:saved.payment.cashPortionMinor?String(Number(saved.payment.cashPortionMinor)/100):'',onlinePortion:'',amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
+  return {...blankInvoice(),amountOnly:saved.amountOnly===true||saved.amountOnly==='true',purchaseAmount:saved.amountOnly?String(Number(saved.items[0]?.rateMinor||0)/100):'',sourceChallanId:saved.sourceChallanId||'',partyId:saved.partyId,walkIn:Boolean(saved.walkIn),paymentWithInvoice:Boolean(saved.payment&&!saved.walkIn),paymentId:saved.paymentId||'',autoRoundOff:saved.autoRoundOff===true||saved.autoRoundOff==='true',discountMode:saved.discountMode||'amount',discount:String(Number(saved.discountValue||0)/100),checkout:saved.payment?{cashPortion:saved.payment.cashPortionMinor?String(Number(saved.payment.cashPortionMinor)/100):'',onlinePortion:'',amount:String(Number(saved.payment.amountMinor)/100),method:saved.payment.method,cashReceived:saved.payment.cashReceivedMinor===''?'':String(Number(saved.payment.cashReceivedMinor)/100),cashChange:saved.payment.cashChangeMinor===''?'':String(Number(saved.payment.cashChangeMinor)/100),onlineChange:saved.payment.onlineChangeMinor===''?'':String(Number(saved.payment.onlineChangeMinor)/100)}:blankCheckout(),type:saved.type,invoiceDate:saved.invoiceDate,challanNumber:saved.challanNumber||'',notes:saved.notes||'',items:saved.items.map(item=>({description:item.description,itemNote:item.itemNote||'',quantity:String(item.quantityMilli/1000),rate:(item.rateMinor/100).toFixed(2),discount:(item.discountMinor/100).toFixed(2),cost:item.costMinor==null||item.costMinor===''?'':(item.costMinor/100).toFixed(2),...measurementDraftFromItem(item)}))};
 }
 
 
 export const noteValueSign = note => note.type === 'credit' ? -1 : 1;
 export const notePartyDelta = note => noteValueSign(note) * Number(note.amountMinor) * (note.invoiceType === 'sale' ? 1 : -1);
-export function makeInvoiceNote(form, invoice, id = crypto.randomUUID()) {
+export function makeInvoiceNote(form, invoice, id = randomUUID()) {
   if(!invoice || invoice.status!=='issued' || !['credit','debit'].includes(form.type) || !['price','return'].includes(form.effect))throw new Error('Choose an issued invoice and correction type.');
   if(!validDate(form.noteDate) || form.noteDate<invoice.invoiceDate)throw new Error('A correction note cannot predate its invoice.');
   const reason=String(form.reason||'').trim();

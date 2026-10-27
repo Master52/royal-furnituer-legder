@@ -1,20 +1,23 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
+let scrollLocks=0,originalOverflow='';
+function lockBodyScroll(){
+  if(scrollLocks++===0){originalOverflow=document.body.style.overflow;document.body.style.overflow='hidden';}
+  let released=false;
+  return ()=>{if(released)return;released=true;if(--scrollLocks===0)document.body.style.overflow=originalOverflow;};
+}
+
 export default function AccountDialog({ title, onClose, busy = false, className = '', initialFocus = null, onKeyDown, children }) {
   const dialog = useRef(null);
   const titleId = useId();
   useEffect(() => {
     const element = dialog.current;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    element.showModal();
-    if(initialFocus)element.querySelector(initialFocus)?.focus();
-    return () => {
-      element.close();
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [initialFocus]);
+    const release=lockBodyScroll();
+    try{element.showModal();}catch(error){release();throw error;}
+    return ()=>{element.close();release();};
+  }, []);
+  useEffect(()=>{if(initialFocus)dialog.current?.querySelector(initialFocus)?.focus();},[initialFocus]);
   return createPortal(
     <dialog ref={dialog} className={`account-dialog ${className}`} aria-labelledby={titleId} onKeyDown={onKeyDown}
       onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>

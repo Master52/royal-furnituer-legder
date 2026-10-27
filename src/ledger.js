@@ -1,3 +1,4 @@
+import {randomUUID} from './uuid.js';
 export const categories = ['Sale', 'Purchase', 'Bhara', 'Expense'];
 export const methods = ['Cash', 'Online', 'Cheque', 'Split'];
 export const SHOP_TIMEZONE = 'Asia/Kolkata';
@@ -95,7 +96,7 @@ function validDateOnly(value) {
   const days=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31];
   return month>=1 && month<=12 && day>=1 && day<=days[month-1];
 }
-export function makeTransaction(form, id = crypto.randomUUID()) {
+export function makeTransaction(form, id = randomUUID()) {
   if (!validLocalDateTime(form.dateTime)) throw new Error('Choose a valid transaction date and time.');
   if(form.recordType==='adjustment'){
     const parseBalance=(value,label)=>parseMinor(value,label,true);

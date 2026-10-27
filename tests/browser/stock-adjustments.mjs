@@ -1,3 +1,4 @@
+import {acceptActionDialogs} from './action-dialog-helper.mjs';
 import assert from 'node:assert/strict';
 import {accountBackend,TEST_ACCESS_TOKEN} from '../helpers/accountBackend.js';
 import {makeParty,makeInvoice,invoiceDraftFromRecord} from '../../src/accounts.js';
@@ -13,8 +14,8 @@ const browser=await chromium.launch({headless:true,args:['--no-sandbox']}),conte
 await context.addInitScript(({endpoint,token})=>{localStorage.setItem('rf.endpoint',JSON.stringify(endpoint));localStorage.setItem('rf.connectionInfo',JSON.stringify({endpoint,version:'1.24.0'}));sessionStorage.setItem('rf.access-token:'+endpoint,token);},{endpoint,token:TEST_ACCESS_TOKEN});
 let stockGate=null,legacySummary=false;
 await context.route('https://script.google.com/**',async route=>{const body=route.request().postDataJSON();calls.push(body.action);if(['listStock','listAccounts'].includes(body.action)&&stockGate)await stockGate;const result=backend.rawPost(body);if(legacySummary){delete result.stockSummary;result.backendVersion='1.26.0';}await route.fulfill({json:result});});
-const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());const popup=()=>page.locator('dialog.account-dialog[open]');
-const close=async()=>page.locator('dialog[open]').last().getByRole('button',{name:'Close popup',exact:true}).click();
+const page=await context.newPage();await acceptActionDialogs(page,{});page.setDefaultTimeout(15000);page.on('pageerror',error=>errors.push(error.message));page.on('dialog',dialog=>dialog.accept());const popup=()=>page.locator('dialog.account-dialog[open]');
+const close=async()=>page.locator('dialog[open]:not(.action-dialog)').last().getByRole('button',{name:'Close popup',exact:true}).click();
 function revise(change){const draft=invoiceDraftFromRecord(invoice);change(draft);const result=backend.post('updateInvoice',{...makeInvoice(draft,invoice.id),invoiceNumber:invoice.invoiceNumber,_expectedRevision:invoice.revision,_editId:'invoice-browser-edit-'+(Number(invoice.revision)+1)});assert.equal(result.ok,true,result.error);invoice=result.record;}
 try{
  await page.goto(process.env.LEDGER_TEST_URL||'http://127.0.0.1:5175');await page.getByRole('button',{name:/Current stock value/}).getByText('₹180.00',{exact:true}).waitFor();assert.equal(calls.filter(action=>action==='listStock').length,0);assert.equal(calls.filter(action=>action==='getInvoices').length,0);
